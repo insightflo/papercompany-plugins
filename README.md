@@ -8,12 +8,16 @@ Runtime core stays in `../papercompany-runtime`. Plugin packages live here and a
 
 Current packages:
 
-- `packages/workflow-engine`
 - `packages/tool-registry`
 - `packages/research-workbench`
 - `packages/service-request-bridge`
 - `packages/knowledge-base`
 - `packages/system-garden`
+
+Note: the former `packages/workflow-engine` plugin has been retired. Workflow
+execution now lives in `../papercompany-runtime` core/native services; the
+runtime preserves compatibility for the legacy `insightflo.workflow-engine`
+plugin key without activating this plugin worker.
 
 ## SDK snapshot
 
