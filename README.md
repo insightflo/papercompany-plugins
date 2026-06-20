@@ -1,6 +1,20 @@
 # Papercompany Plugins
 
+> Repository: <https://github.com/insightflo/papercompany-plugins>
+
 Standalone development workspace for Papercompany/Paperclip plugins.
+
+## Prerequisites
+
+> **Required:** This workspace depends on the [Papercompany runtime](https://github.com/insightflo/papercompany-runtime). Plugin packages here are built against the runtime's plugin SDK and are loaded by the runtime's plugin manager, so the runtime **must be present and runnable** for any plugin in this workspace to build, test, or run. Without it, `pnpm install` / `pnpm build` will fail to resolve the SDK snapshots and plugins cannot be installed.
+
+Runtime repository: <https://github.com/insightflo/papercompany-runtime>
+
+Clone it alongside this workspace (the paths in this README assume this layout):
+
+```sh
+git clone https://github.com/insightflo/papercompany-runtime.git ../papercompany-runtime
+```
 
 ## Scope
 
