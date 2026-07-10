@@ -2,6 +2,7 @@ import {
   definePlugin,
   runWorker,
   type PluginContext,
+  type PluginHealthDiagnostics,
   type ToolResult,
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
@@ -18,6 +19,7 @@ import {
 import manifest from "./manifest.js";
 import { createVaneHeadlessAdapter } from "./adapters/vane-headless.js";
 import { createScriptSearchAdapter } from "./adapters/script-search.js";
+import { createDirectWebAdapter, getDirectWebProviderBaseUrl } from "./adapters/direct-web.js";
 import type {
   VaneHeadlessSearchOutput,
   EvidenceBundle as EvidenceBundleType,
@@ -86,12 +88,88 @@ export function setAdapter(custom?: ResearchAdapter): void {
   scriptAdapter = null;
 }
 
+// Module-level plugin context stash. onHealth() receives no ctx argument, so it
+// reads the live instance config through this reference set during setup().
+let pluginContext: PluginContext | null = null;
+
+/**
+ * Lightweight reachability probe for the configured backend base URL.
+ * Any HTTP response (even 404/405) means the server is up; only a network-level
+ * failure ("fetch failed") counts as unreachable. Short timeout keeps health snappy.
+ */
+async function probeBackendReachable(baseUrl: string, timeoutMs = 2500): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      await fetch(baseUrl, { method: "HEAD", signal: controller.signal });
+      return true;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Research Workbench health: report the configured backend's real state.
+ * Does NOT force Vane — empty config defaults to the built-in direct-web
+ * backend, while script and Vane are optional explicit backends.
+ *   error    -> config missing a required field for the chosen backend
+ *   degraded -> configured remote backend unreachable
+ *   ok       -> default direct-web or configured backend is usable
+ */
+async function computeResearchHealth(): Promise<PluginHealthDiagnostics> {
+  const ctx = pluginContext;
+  if (!ctx) {
+    return { status: "ok", message: "Research Workbench worker alive; config not yet loaded" };
+  }
+  let raw: Record<string, unknown>;
+  try {
+    raw = (await ctx.config.get()) as Record<string, unknown>;
+  } catch (err) {
+    return {
+      status: "degraded",
+      message: `Research Workbench config read failed: ${err instanceof Error ? err.message : "unknown error"}`,
+    };
+  }
+  const config = resolveConfig(raw);
+
+  if (config.backend === "direct-web") {
+    return {
+      status: "ok",
+      message: "Research Workbench adaptive direct-web configured (Exa MCP, then DuckDuckGo)",
+    };
+  }
+
+  if (config.backend === "vane-headless") {
+    if (!config.vaneBaseUrl) {
+      return { status: "error", message: "vane-headless backend is missing required field: vaneBaseUrl" };
+    }
+    const reachable = await probeBackendReachable(config.vaneBaseUrl);
+    if (!reachable) {
+      return { status: "degraded", message: `Vane backend unreachable at ${config.vaneBaseUrl}` };
+    }
+    return { status: "ok", message: `Research Workbench backend 'vane-headless' reachable at ${config.vaneBaseUrl}` };
+  }
+
+  if (config.backend === "script") {
+    if (!config.scriptCommand) {
+      return { status: "error", message: "script backend is missing required field: scriptCommand" };
+    }
+    return { status: "ok", message: "Research Workbench backend 'script' configured" };
+  }
+
+  return { status: "error", message: `Research Workbench backend '${config.backend}' is not supported` };
+}
+
 // ---------------------------------------------------------------------------
 // Config helpers
 // ---------------------------------------------------------------------------
 
 interface InstanceConfig {
-  backend: "vane-headless" | "script";
+  backend: "direct-web" | "vane-headless" | "script";
   vaneBaseUrl: string;
   scriptCommand: string;
   scriptWorkingDirectory: string;
@@ -100,7 +178,7 @@ interface InstanceConfig {
 }
 
 function resolveConfig(raw: Record<string, unknown>): InstanceConfig {
-  const backend = typeof raw.backend === "string" ? raw.backend : "";
+  const backend = typeof raw.backend === "string" ? raw.backend : "direct-web";
   const vaneBaseUrl = typeof raw.vaneBaseUrl === "string" ? raw.vaneBaseUrl : "";
   const scriptCommand = typeof raw.scriptCommand === "string" ? raw.scriptCommand : "";
   const scriptWorkingDirectory = typeof raw.scriptWorkingDirectory === "string" ? raw.scriptWorkingDirectory : "";
@@ -198,6 +276,16 @@ function getOrCreateScriptAdapter(
   return scriptAdapter;
 }
 
+function createDirectWebAdapterForRequest(
+  ctx: PluginContext,
+  config: InstanceConfig,
+): ReturnType<typeof createDirectWebAdapter> {
+  return createDirectWebAdapter({
+    http: ctx.http,
+    timeoutMs: config.timeoutMs,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Tool handler
 // ---------------------------------------------------------------------------
@@ -216,14 +304,14 @@ async function handleResearchSearch(
 
   const config = resolveConfig(await ctx.config.get());
 
-  if (!config.backend) {
-    return { error: "Plugin instance config is missing required field: backend" };
-  }
   if (config.backend === "vane-headless" && !config.vaneBaseUrl) {
     return { error: "Plugin instance config is missing required field for vane-headless backend: vaneBaseUrl" };
   }
   if (config.backend === "script" && !config.scriptCommand) {
     return { error: "Plugin instance config is missing required field for script backend: scriptCommand" };
+  }
+  if (!["direct-web", "vane-headless", "script"].includes(config.backend)) {
+    return { error: `Research Workbench backend '${config.backend}' is not supported` };
   }
 
   const maxResults = typeof p.maxResults === "number"
@@ -232,6 +320,10 @@ async function handleResearchSearch(
   const searchInput = buildSearchInput(p, query, maxResults);
 
   // Determine which adapter path to use
+  if (config.backend === "direct-web" && !adapterOverridden) {
+    return handleDirectWebSearch(ctx, config, searchInput);
+  }
+
   if (config.backend === "vane-headless" && !adapterOverridden) {
     return handleVaneHeadlessSearch(ctx, config, searchInput);
   }
@@ -265,6 +357,66 @@ async function handleResearchSearch(
     const message = err instanceof Error ? err.message : String(err);
     return { error: `Research search failed: ${message}` };
   }
+}
+
+async function handleDirectWebSearch(
+  ctx: PluginContext,
+  config: InstanceConfig,
+  input: ResearchSearchInput,
+): Promise<ToolResult> {
+  const directWeb = createDirectWebAdapterForRequest(ctx, config);
+  const query = input.query;
+  const maxResults = input.maxResults ?? config.defaultMaxResults;
+
+  const profileResolution = resolveResearchProfile(input);
+  const scopeMapping = resolveSourceScopeCategories(
+    input.sourceScope ?? profileResolution.profile.sourceScope,
+    { discussionsSupported: false },
+  );
+
+  const output: VaneHeadlessSearchOutput = await directWeb.search({
+    ...input,
+    query,
+    maxResults,
+  });
+
+  if (!output.ok) {
+    const retryable = output.retryable;
+    const retryAfter = output.retryAfterSeconds;
+    const errorDetail = retryable
+      ? `${output.error} (retryable, retryAfter=${retryAfter ?? 60}s)`
+      : output.error;
+    return {
+      error: `Research search failed: ${errorDetail}`,
+      data: {
+        retryable,
+        ...(retryAfter != null ? { retryAfterSeconds: retryAfter } : {}),
+        error: output.error,
+        providerAttempts: output.engine.attempts ?? [],
+      },
+    };
+  }
+
+  const bundle = buildEvidenceBundle({
+    input,
+    rawResults: output.results,
+    profile: profileResolution.profile,
+    retrievedAt: output.retrievedAt,
+    rawEngine: {
+      name: "direct-web",
+      baseUrl: getDirectWebProviderBaseUrl(output.engine.provider),
+      provider: output.engine.provider,
+      attempts: output.engine.attempts,
+      upstreamVersion: output.engine.upstreamVersion,
+      patchVersion: output.engine.patchVersion,
+    },
+    warnings: [...profileResolution.warnings, ...scopeMapping.warnings],
+  });
+
+  return {
+    content: `Research search completed for "${query}" via direct-web backend: ${bundle.sources.length} sources, ${bundle.warnings.length} warnings. Use \`data.sources\`, \`data.warnings\`, and \`data.gaps\` for synthesis; do not treat this as final analysis.`,
+    data: bundle,
+  };
 }
 
 async function handleVaneHeadlessSearch(
@@ -395,6 +547,7 @@ async function handleScriptSearch(
 
 const plugin = definePlugin({
   async setup(ctx: PluginContext) {
+    pluginContext = ctx;
     ctx.logger.info(`${PLUGIN_ID} plugin starting up`);
 
     ctx.tools.register(
@@ -424,8 +577,7 @@ const plugin = definePlugin({
   },
 
   async onHealth() {
-    // B1: only check config shape, do not require Vane running
-    return { status: "ok", message: "Research Workbench worker is alive (B1 skeleton)" };
+    return computeResearchHealth();
   },
 });
 

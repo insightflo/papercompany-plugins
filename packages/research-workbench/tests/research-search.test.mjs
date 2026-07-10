@@ -18,6 +18,66 @@ async function setupHarness(config = { backend: "vane-headless", vaneBaseUrl: "h
   return harness;
 }
 
+function makeSseResponse(payload, init = {}) {
+  return new Response(`event: message\ndata: ${JSON.stringify(payload)}\n\n`, {
+    status: init.status ?? 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      ...(init.headers ?? {}),
+    },
+  });
+}
+
+function makeExaSearchText() {
+  return `Title: First & Result
+URL: https://example.com/first
+Published: N/A
+Author: N/A
+Highlights:
+First snippet with markup.
+
+---
+
+Title: Second Result
+URL: https://docs.example.com/second
+Published: N/A
+Author: N/A
+Highlights:
+Second snippet.`;
+}
+
+function makeExaHttp(sessionId) {
+  const calls = [];
+  const responses = [
+    makeSseResponse(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          protocolVersion: "2025-03-26",
+          serverInfo: { name: "exa-search-server", version: "3.2.1" },
+        },
+      },
+      { headers: { "Mcp-Session-Id": sessionId } },
+    ),
+    new Response(null, { status: 202 }),
+    makeSseResponse({
+      jsonrpc: "2.0",
+      id: 2,
+      result: { content: [{ type: "text", text: makeExaSearchText() }] },
+    }),
+  ];
+  return {
+    calls,
+    async fetch(url, init) {
+      calls.push({ url, init });
+      const response = responses.shift();
+      if (!response) throw new Error(`No more mock responses for ${sessionId}`);
+      return response;
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Helper: create a mock Vane adapter that returns controlled results
 // ---------------------------------------------------------------------------
@@ -88,6 +148,130 @@ test("executing without query returns ToolResult.error", async () => {
     result.error.includes("query is required"),
     `Error message should mention 'query is required', got: ${result.error}`,
   );
+});
+
+test("manifest advertises direct-web and allows empty instance config", () => {
+  assert.deepEqual(
+    manifest.instanceConfigSchema.properties.backend.enum,
+    ["direct-web", "vane-headless", "script"],
+  );
+  assert.ok(
+    !manifest.instanceConfigSchema.required?.includes("backend"),
+    "backend must not be required because empty config defaults to direct-web",
+  );
+});
+
+test("health is ok with empty config because direct-web is the default backend", async () => {
+  const harness = createTestHarness({
+    manifest,
+    config: {},
+    capabilities: manifest.capabilities,
+  });
+
+  const pluginModule = await import("../dist/worker.js");
+  const plugin = pluginModule.default;
+  pluginModule.setAdapter();
+  await plugin.definition.setup(harness.ctx);
+
+  const health = await plugin.definition.onHealth();
+
+  assert.equal(health.status, "ok");
+  assert.match(health.message, /direct-web/);
+});
+
+test("empty config searches through direct-web and returns an evidence bundle", async () => {
+  const fetchCalls = [];
+  const responses = [
+    makeSseResponse(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          protocolVersion: "2025-03-26",
+          serverInfo: { name: "exa-search-server", version: "3.2.1" },
+        },
+      },
+      { headers: { "Mcp-Session-Id": "exa-session-worker" } },
+    ),
+    new Response(null, { status: 202 }),
+    makeSseResponse({
+      jsonrpc: "2.0",
+      id: 2,
+      result: { content: [{ type: "text", text: makeExaSearchText() }] },
+    }),
+  ];
+  const harness = createTestHarness({
+    manifest,
+    config: {},
+    capabilities: manifest.capabilities,
+  });
+
+  harness.ctx.http = {
+    async fetch(url, init) {
+      fetchCalls.push({ url, init });
+      const response = responses.shift();
+      if (!response) throw new Error("No more mock responses");
+      return response;
+    },
+  };
+
+  const pluginModule = await import("../dist/worker.js");
+  const plugin = pluginModule.default;
+  pluginModule.setAdapter();
+  await plugin.definition.setup(harness.ctx);
+
+  const result = await harness.executeTool("research-search", {
+    query: "papercompany direct web",
+    maxResults: 2,
+  });
+
+  assert.ok(!result.error, `Expected no error, got: ${result.error}`);
+  assert.equal(fetchCalls.length, 3);
+  assert.equal(fetchCalls.every((call) => String(call.url) === "https://mcp.exa.ai/mcp"), true);
+
+  const data = result.data;
+  assert.ok(data, "Expected data to be present");
+  assert.equal(data.query, "papercompany direct web");
+  assert.equal(data.rawEngine.name, "direct-web");
+  assert.equal(data.rawEngine.provider, "exa-mcp");
+  assert.equal(data.rawEngine.baseUrl, "https://mcp.exa.ai/mcp");
+  assert.equal(data.rawEngine.attempts.length, 1);
+  assert.equal(data.rawEngine.attempts[0].status, "ok");
+  assert.equal(data.sources.length, 2);
+  assert.equal(data.sources[0].title, "First & Result");
+  assert.equal(data.sources[0].url, "https://example.com/first");
+  assert.equal(data.sources[0].snippet, "First snippet with markup.");
+  assert.equal(data.sources[1].url, "https://docs.example.com/second");
+  assert.equal(data.qa.sourceCount, 2);
+  assert.ok(
+    result.content.includes("via direct-web backend"),
+    `Expected content to name direct-web backend, got: ${result.content}`,
+  );
+});
+
+test("direct-web handler uses the current plugin HTTP client for each execution", async () => {
+  const harness = createTestHarness({
+    manifest,
+    config: {},
+    capabilities: manifest.capabilities,
+  });
+  const firstHttp = makeExaHttp("exa-session-first");
+  const secondHttp = makeExaHttp("exa-session-second");
+  harness.ctx.http = firstHttp;
+
+  const pluginModule = await import("../dist/worker.js");
+  const plugin = pluginModule.default;
+  pluginModule.setAdapter();
+  await plugin.definition.setup(harness.ctx);
+
+  const first = await harness.executeTool("research-search", { query: "first query", maxResults: 2 });
+  harness.ctx.http = secondHttp;
+  const second = await harness.executeTool("research-search", { query: "second query", maxResults: 2 });
+
+  assert.ok(!first.error, `Expected first search to succeed, got: ${first.error}`);
+  assert.ok(!second.error, `Expected second search to use the replacement HTTP client, got: ${second.error}`);
+  assert.equal(firstHttp.calls.length, 3);
+  assert.equal(secondHttp.calls.length, 3);
 });
 
 // ---------------------------------------------------------------------------

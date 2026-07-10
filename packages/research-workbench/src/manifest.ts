@@ -7,7 +7,7 @@ const manifest: PaperclipPluginManifestV1 = {
   version: PLUGIN_VERSION,
   displayName: "Research Workbench",
   description:
-    "Provides agent tools for web search and evidence gathering via Vane headless backend or a local script backend",
+    "Self-running evidence search with adaptive Exa MCP and DuckDuckGo providers. No API key or Vane is required; vane-headless and script remain optional backends.",
   author: "InsightFlo",
   categories: ["automation"],
   capabilities: [
@@ -46,8 +46,8 @@ const manifest: PaperclipPluginManifestV1 = {
     properties: {
       backend: {
         type: "string",
-        enum: ["vane-headless", "script"],
-        description: "Backend adapter to use for search",
+        enum: ["direct-web", "vane-headless", "script"],
+        description: "Backend adapter to use for search. Defaults to adaptive direct-web (Exa MCP, then DuckDuckGo) when unset; vane-headless and script are optional advanced backends.",
       },
       vaneBaseUrl: {
         type: "string",
@@ -74,7 +74,7 @@ const manifest: PaperclipPluginManifestV1 = {
         description: "Request timeout in milliseconds",
       },
     },
-    required: ["backend"],
+    required: [],
   },
 };
 
