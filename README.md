@@ -22,6 +22,7 @@ Runtime core stays in `../papercompany-runtime`. Plugin packages live here and a
 
 Current packages:
 
+- `packages/github-repository-bridge`
 - `packages/tool-registry`
 - `packages/research-workbench`
 - `packages/service-request-bridge`
