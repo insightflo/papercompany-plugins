@@ -118,6 +118,26 @@ test("rejects invalid signatures and repositories outside the allowlist", async 
   assert.equal((await harness.ctx.issues.list({ companyId: route.companyId })).length, 0);
 });
 
+test("ignores signed GitHub App lifecycle deliveries without a repository", async () => {
+  const harness = await setupHarness();
+  const input = webhook("installation", "delivery-installation", {
+    action: "created",
+    installation: { id: 147908424 },
+    repositories: [{ full_name: route.repository }],
+  });
+
+  await plugin.definition.onWebhook(input);
+
+  const deliveries = await harness.ctx.entities.list({
+    entityType: "github-delivery",
+    externalId: "delivery-installation",
+  });
+  assert.equal((await harness.ctx.issues.list({ companyId: route.companyId })).length, 0);
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].status, "ignored");
+  assert.equal(deliveries[0].data.eventName, "installation");
+});
+
 test("adds a new GitHub comment to the existing issue without creating another issue", async () => {
   const harness = await setupHarness();
   await plugin.definition.onWebhook(webhook("issues", "delivery-issue", issuePayload()));

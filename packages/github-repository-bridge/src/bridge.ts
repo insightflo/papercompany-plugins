@@ -123,13 +123,13 @@ export async function processGitHubWebhook(ctx: PluginContext, input: PluginWebh
 
   const payload = input.parsedBody ?? JSON.parse(input.rawBody);
   const repository = repositoryFromPayload(payload);
-  const route = config.repositories.find((candidate) => candidate.repository === repository);
-  if (!route) throw new Error(`GitHub repository is outside the allowlist: ${repository || "unknown"}`);
   const change = parseGitHubDelivery(eventName, payload);
   if (!change) {
     await recordDelivery(ctx, deliveryId, "ignored", { eventName, repository });
     return;
   }
+  const route = config.repositories.find((candidate) => candidate.repository === repository);
+  if (!route) throw new Error(`GitHub repository is outside the allowlist: ${repository || "unknown"}`);
 
   const linkExternalId = `${change.repository}:${change.externalKey}`;
   const [link] = await ctx.entities.list({ entityType: LINK_ENTITY, externalId: linkExternalId, limit: 1 });
