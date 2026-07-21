@@ -6,6 +6,19 @@ export interface GitHubRepositoryRoute {
   projectId: string;
   projectWorkspaceId: string;
   stewardAgentId: string;
+  deployApprovals?: DeployApprovalsConfig | undefined;
+}
+export interface DispatchTarget {
+  endpointRef: string;
+  tokenRef: string;
+  eventType: string;
+}
+
+export interface DeployApprovalsConfig {
+  branch: string;
+  requiredChecks: string[];
+  approvalTitle: string;
+  dispatch: DispatchTarget;
 }
 
 export interface GitHubBridgeConfig {
@@ -24,9 +37,32 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function parseDeployApprovals(value: unknown, index: number, errors: string[]): DeployApprovalsConfig | undefined {
+  const raw = asRecord(value);
+  const branch = asString(raw.branch);
+  const rawChecks = Array.isArray(raw.requiredChecks) ? raw.requiredChecks : [];
+  const requiredChecks = rawChecks.map((c) => asString(c)).filter((c) => c.length > 0);
+  const approvalTitle = asString(raw.approvalTitle);
+  const dispatchRaw = asRecord(raw.dispatch);
+  const dispatch = {
+    endpointRef: asString(dispatchRaw.endpointRef),
+    tokenRef: asString(dispatchRaw.tokenRef),
+    eventType: asString(dispatchRaw.eventType),
+  };
+  const prefix = `repositories[${index}].deployApprovals`;
+  if (!branch) errors.push(`${prefix}.branch is required`);
+  if (requiredChecks.length === 0) errors.push(`${prefix}.requiredChecks must list at least one check`);
+  if (!approvalTitle) errors.push(`${prefix}.approvalTitle is required`);
+  if (!dispatch.endpointRef) errors.push(`${prefix}.dispatch.endpointRef is required`);
+  if (!dispatch.tokenRef) errors.push(`${prefix}.dispatch.tokenRef is required`);
+  if (!dispatch.eventType) errors.push(`${prefix}.dispatch.eventType is required`);
+  const hasError = errors.some((message) => message.startsWith(prefix));
+  return hasError ? undefined : { branch, requiredChecks, approvalTitle, dispatch };
+}
+
 function parseRoute(value: unknown, index: number, errors: string[]): GitHubRepositoryRoute | null {
   const raw = asRecord(value);
-  const route = {
+  const route: GitHubRepositoryRoute = {
     repository: asString(raw.repository).toLowerCase(),
     companyId: asString(raw.companyId),
     projectId: asString(raw.projectId),
@@ -39,6 +75,10 @@ function parseRoute(value: unknown, index: number, errors: string[]): GitHubRepo
   for (const key of ["companyId", "projectId", "projectWorkspaceId", "stewardAgentId"] as const) {
     if (!route[key]) errors.push(`repositories[${index}].${key} is required`);
   }
+  const deployApprovals = raw.deployApprovals === undefined
+    ? undefined
+    : parseDeployApprovals(raw.deployApprovals, index, errors);
+  if (deployApprovals) route.deployApprovals = deployApprovals;
   return errors.some((message) => message.startsWith(`repositories[${index}]`)) ? null : route;
 }
 
