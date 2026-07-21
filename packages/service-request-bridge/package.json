@@ -15,6 +15,7 @@
   "scripts": {
     "build": "tsc && node ./scripts/build-ui.mjs",
     "clean": "rm -rf dist",
+    "test": "vitest run ./tests/worker.spec.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -28,7 +29,8 @@
     "@types/react-dom": "^19.0.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
   },
   "peerDependencies": {
     "react": ">=18"
