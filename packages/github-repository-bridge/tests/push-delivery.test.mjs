@@ -32,22 +32,31 @@ test("parsePush rejects branch deletions (zero after sha) and missing identity",
 
 test("parseCommitCheck reads check_run conclusions keyed by the exact commit sha", () => {
   const check = parseCommitCheck("check_run", {
-    check_run: { name: "verify", status: "completed", conclusion: "success", head_sha: "deadbeef", html_url: "https://example/c" },
+    check_run: {
+      name: "verify",
+      status: "completed",
+      conclusion: "success",
+      head_sha: "deadbeef",
+      html_url: "https://example/c",
+      check_suite: { head_branch: "main" },
+    },
     repository: { full_name: "Acme/Runtime" },
   });
   assert.equal(check?.repository, "acme/runtime");
   assert.equal(check?.sha, "deadbeef");
   assert.equal(check?.name, "verify");
+  assert.equal(check?.branch, "main");
   assert.equal(check?.conclusion, "success");
   assert.equal(check?.source, "check_run");
 });
 
 test("parseCommitCheck reads workflow_run conclusions keyed by head_sha", () => {
   const check = parseCommitCheck("workflow_run", {
-    workflow_run: { name: "ci", status: "completed", conclusion: "failure", head_sha: "deadbeef", html_url: "https://example/w" },
+    workflow_run: { name: "ci", status: "completed", conclusion: "failure", head_sha: "deadbeef", head_branch: "main", html_url: "https://example/w" },
     repository: { full_name: "acme/runtime" },
   });
   assert.equal(check?.name, "ci");
+  assert.equal(check?.branch, "main");
   assert.equal(check?.conclusion, "failure");
   assert.equal(check?.source, "workflow_run");
   assert.equal(parseCommitCheck("push", {}), null);

@@ -21,6 +21,7 @@ export interface PushDelivery {
 
 export interface CommitCheck {
   repository: string;
+  branch: string;
   sha: string;
   name: string;
   status: string;
@@ -77,12 +78,14 @@ export function parsePush(value: unknown): PushDelivery | null {
 
 function parseCheckRun(payload: JsonRecord): CommitCheck | null {
   const check = asRecord(payload.check_run);
+  const suite = asRecord(check.check_suite);
   const sha = asString(check.head_sha);
   const repository = repositoryName(payload);
   const name = asString(check.name);
   if (!sha || !repository || !name) return null;
   return {
     repository,
+    branch: asString(suite.head_branch),
     sha,
     name,
     status: asString(check.status),
@@ -100,6 +103,7 @@ function parseWorkflowRun(payload: JsonRecord): CommitCheck | null {
   if (!sha || !repository || !name) return null;
   return {
     repository,
+    branch: asString(run.head_branch),
     sha,
     name,
     status: asString(run.status),
