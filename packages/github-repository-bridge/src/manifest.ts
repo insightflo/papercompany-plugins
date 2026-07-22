@@ -3,9 +3,9 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 const manifest: PaperclipPluginManifestV1 = {
   id: "insightflo.github-repository-bridge",
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.0",
   displayName: "GitHub Repository Bridge",
-  description: "Routes allowlisted GitHub work into repository-scoped Papercompany issues.",
+  description: "Routes allowlisted GitHub work into Papercompany issues and creates Human Operator approvals for configured deploy branches.",
   author: "InsightFlo",
   categories: ["automation", "connector"],
   capabilities: [
@@ -23,6 +23,10 @@ const manifest: PaperclipPluginManifestV1 = {
     "agents.read",
     "agents.invoke",
     "activity.log.write",
+    "approvals.create",
+    "events.subscribe",
+    "http.outbound",
+    "jobs.schedule",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -32,6 +36,14 @@ const manifest: PaperclipPluginManifestV1 = {
       endpointKey: "github",
       displayName: "GitHub Webhook",
       description: "Receives allowlisted GitHub Issue, pull request, review, and check events.",
+    },
+  ],
+  jobs: [
+    {
+      jobKey: "drain-dispatch-outbox",
+      displayName: "Drain dispatch outbox",
+      description: "Retries pending repository_dispatch deliveries for approved deploy commits.",
+      schedule: "*/2 * * * *",
     },
   ],
   instanceConfigSchema: {
@@ -59,6 +71,25 @@ const manifest: PaperclipPluginManifestV1 = {
             projectId: { type: "string" },
             projectWorkspaceId: { type: "string" },
             stewardAgentId: { type: "string" },
+            deployApprovals: {
+              type: "object",
+              description: "Optional: create a Human Operator approval once the exact commit on this branch passes every required check.",
+              properties: {
+                branch: { type: "string", description: "Branch that triggers an approval (e.g. main)." },
+                requiredChecks: { type: "array", items: { type: "string" }, description: "Check names that must succeed for the exact SHA." },
+                approvalTitle: { type: "string" },
+                dispatch: {
+                  type: "object",
+                  properties: {
+                    endpointRef: { type: "string", description: "Secret reference resolving to the repository_dispatch URL." },
+                    tokenRef: { type: "string", description: "Secret reference resolving to the dispatch bearer token." },
+                    eventType: { type: "string", description: "repository_dispatch event_type." },
+                  },
+                  required: ["endpointRef", "tokenRef", "eventType"],
+                },
+              },
+              required: ["branch", "requiredChecks", "approvalTitle", "dispatch"],
+            },
           },
           required: ["repository", "companyId", "projectId", "projectWorkspaceId", "stewardAgentId"],
         },

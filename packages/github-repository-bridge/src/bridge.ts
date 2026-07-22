@@ -2,6 +2,8 @@ import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk"
 import { requireBridgeConfig, type GitHubRepositoryRoute } from "./config.js";
 import { parseGitHubDelivery, type GitHubChange } from "./delivery.js";
 import { verifyGitHubSignature } from "./signature.js";
+import { parsePush, parseCommitCheck } from "./push-delivery.js";
+import { processPush, processCommitCheck } from "./deploy-approvals.js";
 
 const DELIVERY_ENTITY = "github-delivery";
 const LINK_ENTITY = "github-object-link";
@@ -125,6 +127,24 @@ export async function processGitHubWebhook(ctx: PluginContext, input: PluginWebh
   const repository = repositoryFromPayload(payload);
   const change = parseGitHubDelivery(eventName, payload);
   if (!change) {
+    const deployRoute = config.repositories.find((candidate) => candidate.repository === repository) ?? null;
+    if (deployRoute?.deployApprovals) {
+      if (eventName === "push") {
+        const push = parsePush(payload);
+        if (push) {
+          await processPush(ctx, deployRoute, deployRoute.deployApprovals, push);
+          await recordDelivery(ctx, deliveryId, "processed", { eventName, repository, deploy: "push" });
+          return;
+        }
+      } else if (eventName === "check_run" || eventName === "workflow_run") {
+        const check = parseCommitCheck(eventName, payload);
+        if (check) {
+          await processCommitCheck(ctx, config, check);
+          await recordDelivery(ctx, deliveryId, "processed", { eventName, repository, deploy: "check" });
+          return;
+        }
+      }
+    }
     await recordDelivery(ctx, deliveryId, "ignored", { eventName, repository });
     return;
   }
