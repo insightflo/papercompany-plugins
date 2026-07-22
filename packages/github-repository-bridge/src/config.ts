@@ -10,8 +10,15 @@ export interface GitHubRepositoryRoute {
 }
 export interface DispatchTarget {
   endpointRef: string;
-  tokenRef: string;
+  tokenRef?: string | undefined;
+  githubApp?: GitHubAppDispatchAuth | undefined;
   eventType: string;
+}
+
+export interface GitHubAppDispatchAuth {
+  appIdRef: string;
+  privateKeyRef: string;
+  installationRepository: string;
 }
 
 export interface DeployApprovalsConfig {
@@ -44,18 +51,34 @@ function parseDeployApprovals(value: unknown, index: number, errors: string[]): 
   const requiredChecks = rawChecks.map((c) => asString(c)).filter((c) => c.length > 0);
   const approvalTitle = asString(raw.approvalTitle);
   const dispatchRaw = asRecord(raw.dispatch);
-  const dispatch = {
+  const tokenRef = asString(dispatchRaw.tokenRef);
+  const githubAppRaw = dispatchRaw.githubApp === undefined ? null : asRecord(dispatchRaw.githubApp);
+  const githubApp = githubAppRaw ? {
+    appIdRef: asString(githubAppRaw.appIdRef),
+    privateKeyRef: asString(githubAppRaw.privateKeyRef),
+    installationRepository: asString(githubAppRaw.installationRepository).toLowerCase(),
+  } : null;
+  const dispatch: DispatchTarget = {
     endpointRef: asString(dispatchRaw.endpointRef),
-    tokenRef: asString(dispatchRaw.tokenRef),
     eventType: asString(dispatchRaw.eventType),
   };
+  if (tokenRef) dispatch.tokenRef = tokenRef;
+  if (githubApp) dispatch.githubApp = githubApp;
   const prefix = `repositories[${index}].deployApprovals`;
   if (!branch) errors.push(`${prefix}.branch is required`);
   if (requiredChecks.length === 0) errors.push(`${prefix}.requiredChecks must list at least one check`);
   if (!approvalTitle) errors.push(`${prefix}.approvalTitle is required`);
   if (!dispatch.endpointRef) errors.push(`${prefix}.dispatch.endpointRef is required`);
-  if (!dispatch.tokenRef) errors.push(`${prefix}.dispatch.tokenRef is required`);
   if (!dispatch.eventType) errors.push(`${prefix}.dispatch.eventType is required`);
+  if (!tokenRef && !githubApp) errors.push(`${prefix}.dispatch authentication is required`);
+  if (tokenRef && githubApp) errors.push(`${prefix}.dispatch must configure exactly one authentication method`);
+  if (githubApp) {
+    if (!githubApp.appIdRef) errors.push(`${prefix}.dispatch.githubApp.appIdRef is required`);
+    if (!githubApp.privateKeyRef) errors.push(`${prefix}.dispatch.githubApp.privateKeyRef is required`);
+    if (!/^[^/\s]+\/[^/\s]+$/.test(githubApp.installationRepository)) {
+      errors.push(`${prefix}.dispatch.githubApp.installationRepository must use owner/name format`);
+    }
+  }
   const hasError = errors.some((message) => message.startsWith(prefix));
   return hasError ? undefined : { branch, requiredChecks, approvalTitle, dispatch };
 }

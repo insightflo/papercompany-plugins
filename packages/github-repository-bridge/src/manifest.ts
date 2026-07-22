@@ -3,7 +3,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 const manifest: PaperclipPluginManifestV1 = {
   id: "insightflo.github-repository-bridge",
   apiVersion: 1,
-  version: "0.2.0",
+  version: "0.2.1",
   displayName: "GitHub Repository Bridge",
   description: "Routes allowlisted GitHub work into Papercompany issues and creates Human Operator approvals for configured deploy branches.",
   author: "InsightFlo",
@@ -83,9 +83,19 @@ const manifest: PaperclipPluginManifestV1 = {
                   properties: {
                     endpointRef: { type: "string", description: "Secret reference resolving to the repository_dispatch URL." },
                     tokenRef: { type: "string", description: "Secret reference resolving to the dispatch bearer token." },
+                    githubApp: {
+                      type: "object",
+                      description: "Preferred: mint a short-lived installation token for every dispatch.",
+                      properties: {
+                        appIdRef: { type: "string", description: "Secret reference resolving to the GitHub App ID." },
+                        privateKeyRef: { type: "string", description: "Secret reference resolving to the GitHub App private key." },
+                        installationRepository: { type: "string", description: "Repository whose App installation receives the dispatch, in owner/name format." },
+                      },
+                      required: ["appIdRef", "privateKeyRef", "installationRepository"],
+                    },
                     eventType: { type: "string", description: "repository_dispatch event_type." },
                   },
-                  required: ["endpointRef", "tokenRef", "eventType"],
+                  required: ["endpointRef", "eventType"],
                 },
               },
               required: ["branch", "requiredChecks", "approvalTitle", "dispatch"],

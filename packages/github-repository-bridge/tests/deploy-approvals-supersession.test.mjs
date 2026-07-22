@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 import { handleApprovalDecided, drainOutbox } from "../src/deploy-approvals.ts";
 import { outboxExternalId } from "../src/dispatch-outbox.ts";
@@ -135,4 +136,60 @@ test("a failed Operations dispatch remains durable and writes an approval-linked
   assert.equal(updated?.data.status, "pending");
   assert.equal(updated?.data.attempts, 1);
   assert.ok(logs.some((entry) => entry.entityId === approvalId && /HTTP 503/.test(entry.message)));
+});
+
+test("a GitHub App dispatch mints an installation token before sending", async () => {
+  const approvalId = "ap-github-app";
+  const sha = "cafebabecafebabecafebabecafebabecafebabe";
+  const records = [{
+    externalId: outboxExternalId(approvalId, sha),
+    entityType: "github-deploy-dispatch",
+    status: "pending",
+    data: {
+      approvalId,
+      sha,
+      repository: "acme/runtime",
+      branch: "main",
+      status: "pending",
+      attempts: 0,
+      lastError: null,
+      payload: { eventType: "deploy", approvalId, commit: sha, repository: "acme/runtime", branch: "main" },
+    },
+  }];
+  const appRoute = structuredClone(route);
+  appRoute.deployApprovals.dispatch = {
+    endpointRef: "URL",
+    eventType: "deploy",
+    githubApp: {
+      appIdRef: "APP_ID",
+      privateKeyRef: "PRIVATE_KEY",
+      installationRepository: "acme/operations",
+    },
+  };
+  const appConfig = { ...config, repositories: [appRoute] };
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" });
+  const { ctx, upserts } = mockCtx(records);
+  ctx.secrets = {
+    async resolve(ref) {
+      return { URL: "https://api.github.com/repos/acme/operations/dispatches", APP_ID: "12345", PRIVATE_KEY: privateKeyPem }[ref];
+    },
+  };
+  const calls = [];
+  ctx.http = {
+    async fetch(url, init) {
+      calls.push({ url, init });
+      if (url.endsWith("/installation")) return new Response(JSON.stringify({ id: 9876 }), { status: 200 });
+      if (url.endsWith("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      return new Response(null, { status: 204 });
+    },
+  };
+
+  await drainOutbox(ctx, appConfig);
+
+  assert.equal(calls.length, 3);
+  assert.match(calls[0].url, /repos\/acme\/operations\/installation$/);
+  assert.match(calls[1].url, /app\/installations\/9876\/access_tokens$/);
+  assert.equal(calls[2].init.headers.authorization, "Bearer installation-token");
+  assert.equal(upserts.at(-1)?.data.status, "sent");
 });

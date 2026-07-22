@@ -6,6 +6,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { GitHubBridgeConfig, GitHubRepositoryRoute, DeployApprovalsConfig } from "./config.js";
+import { mintGitHubAppInstallationToken } from "./github-app-auth.js";
 import type { PushDelivery, CommitCheck } from "./push-delivery.js";
 import {
   DEPLOY_APPROVAL_TYPE,
@@ -241,7 +242,14 @@ export async function drainOutbox(ctx: PluginContext, config: GitHubBridgeConfig
     const sha = String(record.sha ?? "");
     try {
       const endpoint = await ctx.secrets.resolve(deploy.dispatch.endpointRef);
-      const token = await ctx.secrets.resolve(deploy.dispatch.tokenRef);
+      const token = deploy.dispatch.tokenRef
+        ? await ctx.secrets.resolve(deploy.dispatch.tokenRef)
+        : await mintGitHubAppInstallationToken({
+          http: ctx.http,
+          appId: await ctx.secrets.resolve(deploy.dispatch.githubApp!.appIdRef),
+          privateKey: await ctx.secrets.resolve(deploy.dispatch.githubApp!.privateKeyRef),
+          repository: deploy.dispatch.githubApp!.installationRepository,
+        });
       const payload = record.payload as Record<string, unknown> | undefined;
       const res = await ctx.http.fetch(endpoint, {
         method: "POST",
