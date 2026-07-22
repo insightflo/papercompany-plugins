@@ -1,6 +1,6 @@
 {
   "name": "@insightflo/paperclip-github-repository-bridge",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "GitHub repository intake bridge for Papercompany",
   "type": "module",
   "private": true,

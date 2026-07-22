@@ -63,8 +63,10 @@ test("mints an installation token for the configured target repository", async (
   assert.equal(token, "installation-token");
   assert.equal(calls.length, 2);
   assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[0].init.headers["user-agent"], "papercompany-github-repository-bridge");
   assert.match(calls[0].init.headers.authorization, /^Bearer [^.]+\.[^.]+\.[^.]+$/);
   assert.equal(calls[1].init.method, "POST");
+  assert.equal(calls[1].init.headers["user-agent"], "papercompany-github-repository-bridge");
   assert.equal(calls[1].init.headers.authorization, calls[0].init.headers.authorization);
 });
 
