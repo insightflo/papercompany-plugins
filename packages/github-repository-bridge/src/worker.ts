@@ -2,7 +2,6 @@ import { definePlugin, runWorker, type PluginContext, type PluginEvent } from "@
 import { processGitHubWebhook } from "./bridge.js";
 import { validateBridgeConfig, requireBridgeConfig } from "./config.js";
 import { handleApprovalDecided, drainOutbox } from "./deploy-approvals.js";
-import { SELF_PLUGIN_ID } from "./resolution-handler.js";
 
 let pluginContext: PluginContext | null = null;
 
@@ -19,7 +18,6 @@ const plugin = definePlugin({
         const config = requireBridgeConfig(await ctx.config.get());
         const payload = (event.payload ?? {}) as Record<string, unknown>;
         const sourcePluginId = typeof payload.sourcePluginId === "string" ? payload.sourcePluginId : null;
-        if (sourcePluginId !== SELF_PLUGIN_ID) return;
         await handleApprovalDecided(ctx, config, {
           approvalId: event.entityId ?? "",
           decision: typeof payload.decision === "string" ? payload.decision : "",
