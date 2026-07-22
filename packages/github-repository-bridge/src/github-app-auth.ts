@@ -15,6 +15,8 @@ interface MintInstallationTokenInput extends GitHubAppJwtInput {
   repository: string;
 }
 
+export const GITHUB_API_USER_AGENT = "papercompany-github-repository-bridge";
+
 function encodeJson(value: Record<string, unknown>): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
@@ -37,7 +39,7 @@ function githubHeaders(jwt: string): Record<string, string> {
     authorization: `Bearer ${jwt}`,
     accept: "application/vnd.github+json",
     "x-github-api-version": "2022-11-28",
-    "user-agent": "papercompany-github-repository-bridge",
+    "user-agent": GITHUB_API_USER_AGENT,
   };
 }
 
