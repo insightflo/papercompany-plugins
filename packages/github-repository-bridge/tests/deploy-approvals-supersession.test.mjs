@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
-import { handleApprovalDecided, drainOutbox } from "../src/deploy-approvals.ts";
+import { handleApprovalDecided, drainOutbox, processCommitCheck } from "../src/deploy-approvals.ts";
 import { outboxExternalId } from "../src/dispatch-outbox.ts";
 
 const route = {
@@ -22,6 +22,7 @@ const config = { webhookSecretRef: "S", shadowMode: true, repositories: [route] 
 function mockCtx(observations) {
   const upserts = [];
   const logs = [];
+  const approvals = [];
   const ctx = {
     entities: {
       async list({ entityType, externalId }) {
@@ -45,9 +46,16 @@ function mockCtx(observations) {
       },
     },
     activity: { async log(input) { logs.push(input); } },
+    approvals: {
+      async create(input) {
+        const approval = { id: `approval-${approvals.length + 1}`, ...input };
+        approvals.push(approval);
+        return approval;
+      },
+    },
     logger: { info() {}, warn() {} },
   };
-  return { ctx, upserts, logs };
+  return { ctx, upserts, logs, approvals };
 }
 
 function observation({ approvalId, sha, superseded = false }) {
@@ -106,6 +114,29 @@ test("a rejected approval never enqueues a dispatch", async () => {
   });
   const outbox = upserts.find((u) => u.entityType === "github-deploy-dispatch");
   assert.equal(outbox, undefined);
+});
+
+test("a successful main-branch check creates an approval without a push delivery", async () => {
+  const { ctx, upserts, approvals } = mockCtx([]);
+
+  await processCommitCheck(ctx, config, {
+    repository: "acme/runtime",
+    branch: "main",
+    sha: "deadbeefcafebabedeadbeefcafebabedeadbeef",
+    name: "verify",
+    status: "completed",
+    conclusion: "success",
+    url: "https://example/check",
+    source: "check_run",
+  });
+
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0].payload.commit, "deadbeefcafebabedeadbeefcafebabedeadbeef");
+  const observation = upserts.find(
+    (entry) => entry.entityType === "github-deploy-approval" && entry.data.approvalId === approvals[0].id,
+  );
+  assert.equal(observation?.data.branch, "main");
+  assert.equal(observation?.data.approvalId, approvals[0].id);
 });
 
 test("a failed Operations dispatch remains durable and writes an approval-linked activity", async () => {

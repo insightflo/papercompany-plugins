@@ -99,8 +99,25 @@ export async function processCommitCheck(
   const deploy = route?.deployApprovals;
   if (!route || !deploy) return;
   const key = observationExternalId(check.repository, check.sha);
-  const [observation] = await ctx.entities.list({ entityType: OBSERVATION_ENTITY, externalId: key, limit: 1 });
-  if (!observation) return; // untracked SHA (no push to a deploy branch)
+  let [observation] = await ctx.entities.list({ entityType: OBSERVATION_ENTITY, externalId: key, limit: 1 });
+  if (!observation) {
+    // GitHub Apps can receive check events without a matching push event. A
+    // check for the configured branch still carries the exact branch + SHA, so
+    // use it to create the same observation and supersession state as a push.
+    if (check.branch !== deploy.branch) return;
+    await processPush(ctx, route, deploy, {
+      repository: check.repository,
+      branch: check.branch,
+      ref: `refs/heads/${check.branch}`,
+      before: "",
+      after: check.sha,
+      commitMessage: "",
+      commitAuthor: "",
+      url: check.url,
+    });
+    [observation] = await ctx.entities.list({ entityType: OBSERVATION_ENTITY, externalId: key, limit: 1 });
+  }
+  if (!observation) return;
   const data = observation.data ?? {};
   if (data.superseded) return;
   const observed = mergeCheck(asChecks(data.observedChecks), check);

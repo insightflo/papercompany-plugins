@@ -56,6 +56,11 @@ private key stay in Papercompany secrets. Existing `tokenRef` configurations
 remain supported for compatibility, but `tokenRef` and `githubApp` cannot be
 configured together.
 
+Deploy approval tracking accepts either a branch `push` delivery or a GitHub
+check delivery carrying the configured branch and exact commit. This keeps the
+gate working for GitHub App installations that emit check events but do not
+subscribe to push events.
+
 ## Current safety boundary
 
 - Outbound GitHub comments, branch creation, closing, and merging are disabled.
