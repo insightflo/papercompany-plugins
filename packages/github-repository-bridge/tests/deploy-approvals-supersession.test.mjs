@@ -248,5 +248,6 @@ test("a GitHub App dispatch mints an installation token before sending", async (
   assert.match(calls[0].url, /repos\/acme\/operations\/installation$/);
   assert.match(calls[1].url, /app\/installations\/9876\/access_tokens$/);
   assert.equal(calls[2].init.headers.authorization, "Bearer installation-token");
+  assert.equal(calls[2].init.headers["user-agent"], "papercompany-github-repository-bridge");
   assert.equal(upserts.at(-1)?.data.status, "sent");
 });

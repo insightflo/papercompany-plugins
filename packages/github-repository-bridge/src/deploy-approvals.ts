@@ -6,7 +6,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { GitHubBridgeConfig, GitHubRepositoryRoute, DeployApprovalsConfig } from "./config.js";
-import { mintGitHubAppInstallationToken } from "./github-app-auth.js";
+import { GITHUB_API_USER_AGENT, mintGitHubAppInstallationToken } from "./github-app-auth.js";
 import type { PushDelivery, CommitCheck } from "./push-delivery.js";
 import {
   DEPLOY_APPROVAL_TYPE,
@@ -275,7 +275,12 @@ export async function drainOutbox(ctx: PluginContext, config: GitHubBridgeConfig
       const payload = record.payload as Record<string, unknown> | undefined;
       const res = await ctx.http.fetch(endpoint, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/vnd.github+json" },
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/vnd.github+json",
+          "user-agent": GITHUB_API_USER_AGENT,
+        },
         body: JSON.stringify(buildRepositoryDispatchBody(payload as never)),
       });
       const ok = res.status >= 200 && res.status < 300;
