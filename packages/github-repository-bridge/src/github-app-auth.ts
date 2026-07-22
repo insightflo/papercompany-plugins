@@ -37,6 +37,7 @@ function githubHeaders(jwt: string): Record<string, string> {
     authorization: `Bearer ${jwt}`,
     accept: "application/vnd.github+json",
     "x-github-api-version": "2022-11-28",
+    "user-agent": "papercompany-github-repository-bridge",
   };
 }
 
