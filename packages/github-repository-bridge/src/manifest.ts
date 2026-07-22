@@ -3,7 +3,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 const manifest: PaperclipPluginManifestV1 = {
   id: "insightflo.github-repository-bridge",
   apiVersion: 1,
-  version: "0.2.2",
+  version: "0.2.3",
   displayName: "GitHub Repository Bridge",
   description: "Routes allowlisted GitHub work into Papercompany issues and creates Human Operator approvals for configured deploy branches.",
   author: "InsightFlo",

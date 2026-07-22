@@ -194,8 +194,16 @@ export async function handleApprovalDecided(
   config: GitHubBridgeConfig,
   event: { approvalId: string; decision: string; status: string; type: string; sourcePluginId: string | null },
 ): Promise<void> {
-  const { decideResolutionAction } = await import("./resolution-handler.js");
-  const decision = decideResolutionAction(event);
+  // Runtime broadcasts its installation database ID as sourcePluginId, while
+  // the plugin manifest has a stable string ID. Establish ownership from the
+  // plugin-owned observation that recorded this exact approval instead of
+  // comparing those two different identifier namespaces.
+  const observation = (await ctx.entities.list({ entityType: OBSERVATION_ENTITY, limit: 500 }))
+    .find((entity) => entity.data?.approvalId === event.approvalId);
+  if (!observation) return;
+
+  const { decideResolutionAction, SELF_PLUGIN_ID } = await import("./resolution-handler.js");
+  const decision = decideResolutionAction({ ...event, sourcePluginId: SELF_PLUGIN_ID });
   if (!decision.enqueueDispatch) {
     await ctx.activity.log({
       companyId: config.repositories[0]?.companyId ?? "",
@@ -205,9 +213,6 @@ export async function handleApprovalDecided(
     });
     return;
   }
-  const observation = (await ctx.entities.list({ entityType: OBSERVATION_ENTITY, limit: 500 }))
-    .find((entity) => entity.data?.approvalId === event.approvalId);
-  if (!observation) return;
   const data = observation.data ?? {};
   // A superseded observation (a newer commit superseded its branch) must never
   // dispatch, even if its old approval is later approved.

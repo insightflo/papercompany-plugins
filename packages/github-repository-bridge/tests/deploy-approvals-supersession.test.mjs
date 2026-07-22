@@ -87,6 +87,32 @@ test("an approved non-superseded observation enqueues one dispatch keyed by appr
   assert.equal(outbox.externalId, outboxExternalId("ap-1", "deadbeef"));
 });
 
+test("an approved observation accepts the Runtime installation ID as sourcePluginId", async () => {
+  const { ctx, upserts } = mockCtx([observation({ approvalId: "ap-runtime-id", sha: "feedface" })]);
+  await handleApprovalDecided(ctx, config, {
+    approvalId: "ap-runtime-id",
+    decision: "approved",
+    status: "approved",
+    type: "external_automation",
+    sourcePluginId: "10982117-aa04-4fb2-950a-4b2a8b2e65b2",
+  });
+  const outbox = upserts.find((u) => u.entityType === "github-deploy-dispatch");
+  assert.ok(outbox, "expected the plugin-owned observation to establish approval ownership");
+  assert.equal(outbox.externalId, outboxExternalId("ap-runtime-id", "feedface"));
+});
+
+test("an approval with no plugin-owned observation never enqueues a dispatch", async () => {
+  const { ctx, upserts } = mockCtx([]);
+  await handleApprovalDecided(ctx, config, {
+    approvalId: "foreign-approval",
+    decision: "approved",
+    status: "approved",
+    type: "external_automation",
+    sourcePluginId: "some-runtime-installation-id",
+  });
+  assert.equal(upserts.find((u) => u.entityType === "github-deploy-dispatch"), undefined);
+});
+
 test("a superseded observation never enqueues a dispatch even when later approved", async () => {
   const { ctx, upserts, logs } = mockCtx([observation({ approvalId: "ap-old", sha: "oldsha", superseded: true })]);
   await handleApprovalDecided(ctx, config, {
