@@ -2,10 +2,13 @@ import { definePlugin, runWorker, type PluginContext, type PluginEvent } from "@
 import { processGitHubWebhook } from "./bridge.js";
 import { validateBridgeConfig, requireBridgeConfig } from "./config.js";
 import { handleApprovalDecided, drainOutbox } from "./deploy-approvals.js";
+import { processStewardMergeRequest, drainMergeOutbox } from "./merge-approvals.js";
 
 let pluginContext: PluginContext | null = null;
 
 const DRAIN_JOB_KEY = "drain-dispatch-outbox";
+const DRAIN_MERGE_JOB_KEY = "drain-merge-outbox";
+const STEWARD_ENDPOINT = "steward-merge-request";
 
 const plugin = definePlugin({
   async setup(ctx: PluginContext) {
@@ -43,12 +46,27 @@ const plugin = definePlugin({
         });
       }
     });
+    // Periodically drain the retryable squash-merge outbox.
+    ctx.jobs.register(DRAIN_MERGE_JOB_KEY, async () => {
+      try {
+        const config = requireBridgeConfig(await ctx.config.get());
+        await drainMergeOutbox(ctx, config);
+      } catch (error) {
+        ctx.logger.warn("merge outbox drain failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
     ctx.logger.info("GitHub Repository Bridge worker ready");
   },
   async onWebhook(input) {
     const ctx = pluginContext;
     if (!ctx) throw new Error("GitHub Repository Bridge is not initialized");
-    await processGitHubWebhook(ctx, input);
+    if (input.endpointKey === STEWARD_ENDPOINT) {
+      await processStewardMergeRequest(ctx, input);
+    } else {
+      await processGitHubWebhook(ctx, input);
+    }
   },
   async onValidateConfig(config) {
     return validateBridgeConfig(config);

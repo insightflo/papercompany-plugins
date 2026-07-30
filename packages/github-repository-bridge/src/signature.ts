@@ -3,7 +3,12 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 const SIGNATURE_PREFIX = "sha256=";
 const SHA256_HEX_LENGTH = 64;
 
-export function verifyGitHubSignature(
+/**
+ * Constant-time HMAC-SHA256 verification of a request body against a
+ * `sha256=<hex>` signature header. Generic over the shared secret, so the same
+ * primitive authenticates both the GitHub webhook and the steward merge API.
+ */
+export function verifyHmacSignature(
   rawBody: string,
   signature: string | undefined,
   secret: string,
@@ -18,4 +23,12 @@ export function verifyGitHubSignature(
   const expected = createHmac("sha256", secret).update(rawBody).digest();
   const received = Buffer.from(receivedHex, "hex");
   return received.length === expected.length && timingSafeEqual(received, expected);
+}
+
+export function verifyGitHubSignature(
+  rawBody: string,
+  signature: string | undefined,
+  secret: string,
+): boolean {
+  return verifyHmacSignature(rawBody, signature, secret);
 }
