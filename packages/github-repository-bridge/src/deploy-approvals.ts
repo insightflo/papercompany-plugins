@@ -194,6 +194,15 @@ export async function handleApprovalDecided(
   config: GitHubBridgeConfig,
   event: { approvalId: string; decision: string; status: string; type: string; sourcePluginId: string | null },
 ): Promise<void> {
+  // Merge approvals are recorded in the merge-request entity; route them to the
+  // merge handler before the deploy observation lookup so the deploy path stays
+  // byte-for-byte unchanged for deployment approvals.
+  const { findMergeRequestByApprovalId, handleMergeApprovalDecided } = await import("./merge-approvals.js");
+  const mergeRequest = await findMergeRequestByApprovalId(ctx, event.approvalId);
+  if (mergeRequest) {
+    await handleMergeApprovalDecided(ctx, config, event, mergeRequest);
+    return;
+  }
   // Runtime broadcasts its installation database ID as sourcePluginId, while
   // the plugin manifest has a stable string ID. Establish ownership from the
   // plugin-owned observation that recorded this exact approval instead of

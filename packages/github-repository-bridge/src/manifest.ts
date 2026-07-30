@@ -3,9 +3,9 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 const manifest: PaperclipPluginManifestV1 = {
   id: "insightflo.github-repository-bridge",
   apiVersion: 1,
-  version: "0.2.6",
+  version: "0.3.0",
   displayName: "GitHub Repository Bridge",
-  description: "Routes allowlisted GitHub work into Papercompany issues and creates Human Operator approvals for configured deploy branches.",
+  description: "Routes allowlisted GitHub work into Papercompany issues and creates Human Operator approvals for both deployment (main-check) and steward-PASS PR squash merge.",
   author: "InsightFlo",
   categories: ["automation", "connector"],
   capabilities: [
@@ -37,12 +37,23 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "GitHub Webhook",
       description: "Receives allowlisted GitHub Issue, pull request, review, and check events.",
     },
+    {
+      endpointKey: "steward-merge-request",
+      displayName: "Steward Merge Request",
+      description: "Authenticated internal API a repository steward calls with a PASS verdict to request a Human Operator PR squash-merge approval.",
+    },
   ],
   jobs: [
     {
       jobKey: "drain-dispatch-outbox",
       displayName: "Drain dispatch outbox",
       description: "Retries pending repository_dispatch deliveries for approved deploy commits.",
+      schedule: "*/2 * * * *",
+    },
+    {
+      jobKey: "drain-merge-outbox",
+      displayName: "Drain squash-merge outbox",
+      description: "Revalidates the exact PR head and performs approved squash merges with bounded retries.",
       schedule: "*/2 * * * *",
     },
   ],
@@ -53,6 +64,11 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "string",
         title: "Webhook secret reference",
         description: "Papercompany secret reference containing the GitHub App webhook secret.",
+      },
+      stewardApiSecretRef: {
+        type: "string",
+        title: "Steward merge API secret reference",
+        description: "Papercompany secret reference used to HMAC-sign the steward merge-request endpoint. Required when any repository configures mergeApprovals.",
       },
       shadowMode: {
         type: "boolean",
@@ -99,6 +115,26 @@ const manifest: PaperclipPluginManifestV1 = {
                 },
               },
               required: ["branch", "requiredChecks", "approvalTitle", "dispatch"],
+            },
+            mergeApprovals: {
+              type: "object",
+              description: "Optional: create a Human Operator approval to squash-merge a pull request after a repository steward PASS, then perform the exact-revision squash merge via the GitHub App.",
+              properties: {
+                baseBranch: { type: "string", description: "PR base branch eligible for the squash-merge approval (e.g. main)." },
+                requiredChecks: { type: "array", items: { type: "string" }, description: "PR check names that must succeed for the exact head SHA." },
+                approvalTitle: { type: "string" },
+                githubApp: {
+                  type: "object",
+                  description: "GitHub App credentials used to read PR state and perform the squash merge.",
+                  properties: {
+                    appIdRef: { type: "string", description: "Secret reference resolving to the GitHub App ID." },
+                    privateKeyRef: { type: "string", description: "Secret reference resolving to the GitHub App private key." },
+                    installationRepository: { type: "string", description: "Repository hosting the pull request, where the App is installed, in owner/name format." },
+                  },
+                  required: ["appIdRef", "privateKeyRef", "installationRepository"],
+                },
+              },
+              required: ["baseBranch", "requiredChecks", "approvalTitle", "githubApp"],
             },
           },
           required: ["repository", "companyId", "projectId", "projectWorkspaceId", "stewardAgentId"],

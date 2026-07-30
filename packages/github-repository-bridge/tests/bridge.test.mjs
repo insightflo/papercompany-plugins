@@ -69,16 +69,31 @@ async function setupHarnessWithAgent(status) {
   return harness;
 }
 
-test("manifest declares one GitHub webhook and only plugin-side capabilities", () => {
+test("manifest declares the GitHub and steward webhooks and plugin-side capabilities", () => {
   assert.equal(pluginManifestV1Schema.safeParse(manifest).success, true);
   assert.equal(manifest.id, "insightflo.github-repository-bridge");
-  assert.deepEqual(manifest.webhooks, [{
-    endpointKey: "github",
-    displayName: "GitHub Webhook",
-    description: "Receives allowlisted GitHub Issue, pull request, review, and check events.",
-  }]);
+  const endpointKeys = manifest.webhooks.map((w) => w.endpointKey);
+  assert.ok(endpointKeys.includes("github"), "github webhook must be declared");
+  assert.ok(endpointKeys.includes("steward-merge-request"), "steward merge-request webhook must be declared");
+  assert.deepEqual(
+    manifest.webhooks.find((w) => w.endpointKey === "github"),
+    {
+      endpointKey: "github",
+      displayName: "GitHub Webhook",
+      description: "Receives allowlisted GitHub Issue, pull request, review, and check events.",
+    },
+  );
+  assert.ok(
+    manifest.jobs.some((j) => j.jobKey === "drain-dispatch-outbox"),
+    "deploy dispatch drain job must be declared",
+  );
+  assert.ok(
+    manifest.jobs.some((j) => j.jobKey === "drain-merge-outbox"),
+    "squash-merge drain job must be declared",
+  );
   assert.equal(manifest.capabilities.includes("webhooks.receive"), true);
   assert.equal(manifest.capabilities.includes("secrets.read-ref"), true);
+  assert.equal(manifest.capabilities.includes("approvals.create"), true);
   assert.equal(manifest.capabilities.includes("issues.create"), true);
 });
 

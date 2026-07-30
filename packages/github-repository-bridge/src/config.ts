@@ -7,6 +7,7 @@ export interface GitHubRepositoryRoute {
   projectWorkspaceId: string;
   stewardAgentId: string;
   deployApprovals?: DeployApprovalsConfig | undefined;
+  mergeApprovals?: MergeApprovalsConfig | undefined;
 }
 export interface DispatchTarget {
   endpointRef: string;
@@ -20,6 +21,23 @@ export interface GitHubAppDispatchAuth {
   privateKeyRef: string;
   installationRepository: string;
 }
+export interface GitHubAppMergeAuth {
+  appIdRef: string;
+  privateKeyRef: string;
+  /** Repository hosting the pull request (owner/name). The App must be installed here. */
+  installationRepository: string;
+}
+
+export interface MergeApprovalsConfig {
+  /** PR base branch that is eligible for the squash-merge approval (e.g. main). */
+  baseBranch: string;
+  /** PR check names that must succeed for the exact head SHA before an approval may be created. */
+  requiredChecks: string[];
+  /** Title template for the Human Operator merge approval. */
+  approvalTitle: string;
+  /** GitHub App credentials used to read PR state and perform the squash merge. */
+  githubApp: GitHubAppMergeAuth;
+}
 
 export interface DeployApprovalsConfig {
   branch: string;
@@ -30,6 +48,8 @@ export interface DeployApprovalsConfig {
 
 export interface GitHubBridgeConfig {
   webhookSecretRef: string;
+  /** Secret reference used to verify signatures on the steward merge-request endpoint. */
+  stewardApiSecretRef: string;
   shadowMode: boolean;
   repositories: GitHubRepositoryRoute[];
 }
@@ -83,6 +103,31 @@ function parseDeployApprovals(value: unknown, index: number, errors: string[]): 
   return hasError ? undefined : { branch, requiredChecks, approvalTitle, dispatch };
 }
 
+function parseMergeApprovals(value: unknown, index: number, errors: string[]): MergeApprovalsConfig | undefined {
+  const raw = asRecord(value);
+  const baseBranch = asString(raw.baseBranch);
+  const rawChecks = Array.isArray(raw.requiredChecks) ? raw.requiredChecks : [];
+  const requiredChecks = rawChecks.map((c) => asString(c)).filter((c) => c.length > 0);
+  const approvalTitle = asString(raw.approvalTitle);
+  const githubAppRaw = asRecord(raw.githubApp);
+  const githubApp = {
+    appIdRef: asString(githubAppRaw.appIdRef),
+    privateKeyRef: asString(githubAppRaw.privateKeyRef),
+    installationRepository: asString(githubAppRaw.installationRepository).toLowerCase(),
+  };
+  const prefix = `repositories[${index}].mergeApprovals`;
+  if (!baseBranch) errors.push(`${prefix}.baseBranch is required`);
+  if (requiredChecks.length === 0) errors.push(`${prefix}.requiredChecks must list at least one check`);
+  if (!approvalTitle) errors.push(`${prefix}.approvalTitle is required`);
+  if (!githubApp.appIdRef) errors.push(`${prefix}.githubApp.appIdRef is required`);
+  if (!githubApp.privateKeyRef) errors.push(`${prefix}.githubApp.privateKeyRef is required`);
+  if (!/^[^/\s]+\/[^/\s]+$/.test(githubApp.installationRepository)) {
+    errors.push(`${prefix}.githubApp.installationRepository must use owner/name format`);
+  }
+  const hasError = errors.some((message) => message.startsWith(prefix));
+  return hasError ? undefined : { baseBranch, requiredChecks, approvalTitle, githubApp };
+}
+
 function parseRoute(value: unknown, index: number, errors: string[]): GitHubRepositoryRoute | null {
   const raw = asRecord(value);
   const route: GitHubRepositoryRoute = {
@@ -102,6 +147,10 @@ function parseRoute(value: unknown, index: number, errors: string[]): GitHubRepo
     ? undefined
     : parseDeployApprovals(raw.deployApprovals, index, errors);
   if (deployApprovals) route.deployApprovals = deployApprovals;
+  const mergeApprovals = raw.mergeApprovals === undefined
+    ? undefined
+    : parseMergeApprovals(raw.mergeApprovals, index, errors);
+  if (mergeApprovals) route.mergeApprovals = mergeApprovals;
   return errors.some((message) => message.startsWith(`repositories[${index}]`)) ? null : route;
 }
 
@@ -110,6 +159,7 @@ export function readBridgeConfig(value: unknown): { config: GitHubBridgeConfig |
   const errors: string[] = [];
   const webhookSecretRef = asString(raw.webhookSecretRef);
   if (!webhookSecretRef) errors.push("webhookSecretRef is required");
+  const stewardApiSecretRef = asString(raw.stewardApiSecretRef);
   if (raw.shadowMode === false) errors.push("shadow mode must remain enabled until outbound GitHub actions are implemented");
   const rawRepositories = Array.isArray(raw.repositories) ? raw.repositories : [];
   if (rawRepositories.length === 0) errors.push("repositories must contain at least one route");
@@ -121,9 +171,14 @@ export function readBridgeConfig(value: unknown): { config: GitHubBridgeConfig |
     if (seen.has(route.repository)) errors.push(`duplicate repository route: ${route.repository}`);
     seen.add(route.repository);
   }
+  const mergeEnabled = repositories.some((route) => Boolean(route.mergeApprovals));
+  if (mergeEnabled && !stewardApiSecretRef) {
+    errors.push("stewardApiSecretRef is required when any repository configures mergeApprovals");
+  }
   return {
     config: errors.length === 0 ? {
       webhookSecretRef,
+      stewardApiSecretRef,
       shadowMode: raw.shadowMode !== false,
       repositories,
     } : null,

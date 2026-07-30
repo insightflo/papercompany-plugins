@@ -4,3 +4,4 @@ export * from "./config.js";
 export * from "./delivery.js";
 export * from "./signature.js";
 export * from "./github-app-auth.js";
+export * from "./merge-checks.js";
