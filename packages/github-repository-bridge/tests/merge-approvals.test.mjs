@@ -39,6 +39,7 @@ const config = {
 
 function prJson({ headSha = SHA, state = "open", draft = false, merged = false, mergeable = true, base = "main" } = {}) {
   return {
+    node_id: "PR_node_7",
     number: 7,
     title: "Ship feature",
     state,
@@ -60,13 +61,24 @@ function checksJson(ok = true) {
   };
 }
 
-function mergeHttp({ pr = prJson(), checks = checksJson(true), mergeStatus = 200, mergeMerged, onCall } = {}) {
+function mergeHttp({ pr = prJson(), checks = checksJson(true), mergeStatus = 200, mergeMerged, readyStatus = 200, onCall } = {}) {
+  let currentPr = { ...pr };
   return {
     async fetch(url, init) {
       if (onCall) onCall(url, init);
       const headers = { "content-type": "application/json" };
       if (url.endsWith("/installation")) return new Response(JSON.stringify({ id: 123 }), { status: 200, headers });
       if (url.endsWith("/access_tokens")) return new Response(JSON.stringify({ token: "merge-token" }), { status: 201, headers });
+      if (url === "https://api.github.com/graphql") {
+        const success = readyStatus >= 200 && readyStatus < 300;
+        if (success) currentPr = { ...currentPr, draft: false };
+        return new Response(
+          JSON.stringify(success
+            ? { data: { markPullRequestReadyForReview: { pullRequest: { id: currentPr.node_id, isDraft: currentPr.draft } } } }
+            : { errors: [{ message: "Resource not accessible by integration" }] }),
+          { status: readyStatus, headers },
+        );
+      }
       if (/\/pulls\/\d+\/merge$/.test(url)) {
         const success = mergeStatus >= 200 && mergeStatus < 300;
         const merged = mergeMerged === undefined ? success : mergeMerged;
@@ -75,7 +87,7 @@ function mergeHttp({ pr = prJson(), checks = checksJson(true), mergeStatus = 200
           { status: mergeStatus, headers },
         );
       }
-      if (/\/pulls\/\d+$/.test(url)) return new Response(JSON.stringify(pr), { status: 200, headers });
+      if (/\/pulls\/\d+$/.test(url)) return new Response(JSON.stringify(currentPr), { status: 200, headers });
       if (/\/commits\/[^/]+\/check-runs/.test(url)) return new Response(JSON.stringify(checks), { status: 200, headers });
       return new Response(null, { status: 404 });
     },
@@ -165,10 +177,31 @@ test("a steward PASS with a passing gate creates one merge approval and records 
   assert.equal(req.data.superseded, false);
 });
 
-test("a steward PASS for a draft PR never creates an approval", async () => {
+test("a steward PASS for an otherwise eligible draft PR marks it ready and then creates an approval", async () => {
+  const calls = [];
+  const { ctx, approvals, logs } = mockCtx([]);
+  ctx.http = mergeHttp({ pr: prJson({ draft: true }), onCall: (url, init) => calls.push({ url, init }) });
+  await requestMergeApproval(ctx, config, stewardReq());
+  assert.equal(approvals.length, 1);
+  assert.equal(calls.filter((call) => call.url === "https://api.github.com/graphql").length, 1);
+  assert.equal(calls.filter((call) => /\/pulls\/\d+$/.test(call.url)).length, 2);
+  assert.equal(calls.filter((call) => /\/commits\/[^/]+\/check-runs/.test(call.url)).length, 2);
+  assert.ok(logs.some((entry) => /ready for review after steward PASS/.test(entry.message)));
+});
+
+test("a draft PR stays blocked when another merge gate fails", async () => {
+  const calls = [];
   const { ctx, approvals } = mockCtx([]);
-  ctx.http = mergeHttp({ pr: prJson({ draft: true }) });
-  await assert.rejects(requestMergeApproval(ctx, config, stewardReq()), /draft/);
+  ctx.http = mergeHttp({ pr: prJson({ draft: true }), checks: checksJson(false), onCall: (url) => calls.push(url) });
+  await assert.rejects(requestMergeApproval(ctx, config, stewardReq()), /draft.*required checks not satisfied/);
+  assert.equal(approvals.length, 0);
+  assert.equal(calls.includes("https://api.github.com/graphql"), false);
+});
+
+test("a failed ready-for-review transition never creates an approval", async () => {
+  const { ctx, approvals } = mockCtx([]);
+  ctx.http = mergeHttp({ pr: prJson({ draft: true }), readyStatus: 403 });
+  await assert.rejects(requestMergeApproval(ctx, config, stewardReq()), /ready-for-review transition failed: HTTP 403/);
   assert.equal(approvals.length, 0);
 });
 

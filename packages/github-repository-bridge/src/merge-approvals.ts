@@ -73,6 +73,17 @@ function githubAuthHeaders(token: string): Record<string, string> {
   };
 }
 
+const MARK_READY_MUTATION = `
+  mutation MarkPullRequestReadyForReview($pullRequestId: ID!) {
+    markPullRequestReadyForReview(input: { pullRequestId: $pullRequestId }) {
+      pullRequest {
+        id
+        isDraft
+      }
+    }
+  }
+`;
+
 async function readJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -106,6 +117,35 @@ async function fetchPullRequestState(
   const pr = parsePullRequest(repository, await readJson(res));
   if (!pr) throw new Error(`GitHub pull request response was incomplete for ${repository}#${prNumber}`);
   return pr;
+}
+
+async function markPullRequestReadyForReview(
+  ctx: PluginContext,
+  token: string,
+  pr: PullRequestState,
+): Promise<void> {
+  if (!pr.nodeId) {
+    throw new Error(`GitHub pull request response did not include a node id for ${pr.repository}#${pr.prNumber}`);
+  }
+  const res = await ctx.http.fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: { ...githubAuthHeaders(token), "content-type": "application/json" },
+    body: JSON.stringify({ query: MARK_READY_MUTATION, variables: { pullRequestId: pr.nodeId } }),
+  });
+  const body = asRecord(await readJson(res));
+  const errors = Array.isArray(body.errors)
+    ? body.errors.map((entry) => asString(asRecord(entry).message)).filter(Boolean)
+    : [];
+  if (res.status < 200 || res.status >= 300 || errors.length > 0) {
+    throw new Error(
+      `GitHub ready-for-review transition failed: HTTP ${res.status}${errors.length > 0 ? `: ${errors.join("; ")}` : ""}`,
+    );
+  }
+  const mutation = asRecord(asRecord(body.data).markPullRequestReadyForReview);
+  const updated = asRecord(mutation.pullRequest);
+  if (updated.isDraft !== false) {
+    throw new Error(`GitHub did not confirm ready-for-review for ${pr.repository}#${pr.prNumber}`);
+  }
 }
 
 async function fetchShaChecks(
@@ -233,9 +273,28 @@ export async function requestMergeApproval(
   }
 
   const token = await mintMergeToken(ctx, merge.githubApp);
-  const pr = await fetchPullRequestState(ctx, token, request.repository, request.prNumber);
-  const observed = await fetchShaChecks(ctx, token, request.repository, request.headSha);
-  const gate = evaluateMergeGate({ pr, config: merge, requiredHeadSha: request.headSha, observed });
+  let pr = await fetchPullRequestState(ctx, token, request.repository, request.prNumber);
+  let observed = await fetchShaChecks(ctx, token, request.repository, request.headSha);
+  let gate = evaluateMergeGate({ pr, config: merge, requiredHeadSha: request.headSha, observed });
+  if (pr.draft && gate.reasons.length === 1 && gate.reasons[0] === "pull request is a draft") {
+    await markPullRequestReadyForReview(ctx, token, pr);
+    await ctx.activity.log({
+      companyId: route.companyId,
+      message: `Marked ${request.repository}#${request.prNumber}@${request.headSha.slice(0, 12)} ready for review after steward PASS`,
+      entityType: "issue",
+      entityId: request.issueId,
+      metadata: {
+        repository: request.repository,
+        prNumber: request.prNumber,
+        headSha: request.headSha,
+      },
+    });
+    // The transition is not the approval. Re-read the live PR and checks so a
+    // changed head or newly failing gate still blocks the Human Operator card.
+    pr = await fetchPullRequestState(ctx, token, request.repository, request.prNumber);
+    observed = await fetchShaChecks(ctx, token, request.repository, request.headSha);
+    gate = evaluateMergeGate({ pr, config: merge, requiredHeadSha: request.headSha, observed });
+  }
   if (!gate.allowed) {
     throw new Error(
       `merge gate failed for ${request.repository}#${request.prNumber}@${request.headSha.slice(0, 12)}: ${gate.reasons.join("; ")}`,
