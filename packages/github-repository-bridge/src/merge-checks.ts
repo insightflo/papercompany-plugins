@@ -22,6 +22,7 @@ const SOURCE_PLUGIN_ID = "insightflo.github-repository-bridge";
 
 /** Live GitHub pull-request state relevant to the merge gate. */
 export interface PullRequestState {
+  nodeId: string;
   repository: string;
   prNumber: number;
   title: string;
@@ -68,6 +69,7 @@ export function parsePullRequest(repository: string, value: unknown): PullReques
   const state = asString(pr.state) === "closed" ? "closed" : "open";
   const mergeable = pr.mergeable === true ? true : pr.mergeable === false ? false : null;
   return {
+    nodeId: asString(pr.node_id),
     repository: repository.toLowerCase(),
     prNumber,
     title: asString(pr.title),

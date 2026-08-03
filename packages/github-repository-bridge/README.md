@@ -104,12 +104,14 @@ mutation is performed. The JSON body is:
 
 The plugin fail-closed revalidates the exact PR revision before creating any
 approval: the repository is allowlisted and has `mergeApprovals` configured, the
-PR is open and non-draft, its base is `baseBranch`, the live head still matches
-`headSha`, it is mergeable, every `requiredChecks` succeeded for that exact SHA,
-and there is no superseding request. A repeated PASS for the same PR+SHA is
-idempotent; a PASS for an older head supersedes any stored request for that PR.
-On success the plugin creates one Human Operator approval (`payload.kind =
-"merge"`), distinct from a deployment approval.
+PR is open, its base is `baseBranch`, the live head still matches `headSha`, it
+is mergeable, every `requiredChecks` succeeded for that exact SHA, and there is
+no superseding request. If draft status is the only remaining blocker, the
+plugin marks the PR ready for review through the same GitHub App, then re-reads
+the live PR and checks before creating the approval. A repeated PASS for the
+same PR+SHA is idempotent; a PASS for an older head supersedes any stored request
+for that PR. On success the plugin creates one Human Operator approval
+(`payload.kind = "merge"`), distinct from a deployment approval.
 
 On an approved merge approval the plugin revalidates the exact head and gates
 again and then performs a single squash merge through the GitHub App:
@@ -129,7 +131,7 @@ dispatch outbox; a terminal gate failure is never retried.
 The `mergeApprovals.githubApp` App must be installed on the PR's repository
 (`installationRepository`) with:
 
-- **Pull requests: Read & Write** (read PR state, perform the squash merge)
+- **Pull requests: Read & Write** (read PR state, mark an eligible draft ready, perform the squash merge)
 - **Checks: Read** (read check-run status for the exact head SHA)
 - **Contents: Read** (read repository/commit contents as applicable)
 - **Metadata: Read** (required by GitHub for all App access)
