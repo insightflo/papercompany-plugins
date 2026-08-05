@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import plugin from "../src/worker.ts";
 import { processStewardReviewResult } from "../src/steward-review.ts";
+import { activeLockCount } from "../src/rereview-lock.ts";
 import {
+  SHA,
   NEW_SHA,
   route,
   webhook,
   pullPayload,
   githubHttp,
+  checksJson,
   signedReviewInput,
   setupHarness,
   listIssues,
@@ -190,3 +193,82 @@ test("true concurrency: two identical REQUEST_CHANGES verdicts publish ONE comme
   const revisions = await harness.ctx.entities.list({ entityType: "github-rereview-issue" });
   assert.equal(revisions.filter((revision) => revision.data.sha === NEW_SHA).length, 1);
 });
+
+test("TOCTOU regression: old-head REQUEST_CHANGES waiting on the lock is rejected after a new-head intake advances", async () => {
+  const { harness, issue } = await setupHarness();
+
+  // Establish the OLD head (SHA — the linked initial head) as the tracked,
+  // woken revision so an old-head verdict is otherwise fresh.
+  await plugin.definition.onWebhook(webhook("pull_request", "d-old-wake", pullPayload("synchronize", SHA)));
+  let states = await harness.ctx.entities.list({ entityType: "github-rereview-state", externalId: `rereview:${route.repository}:7` });
+  assert.equal(states[0].data.revision, SHA);
+  assert.equal(states[0].data.wokenRevision, SHA);
+
+  // Gate the NEW head's live check-runs fetch (intake holds the lock while
+  // blocked here) and record any GitHub comment POST.
+  let releaseIntake;
+  const intakeEnteredCheckFetch = new Promise((resolve) => { releaseIntake = resolve; });
+  let intakeHoldingLock = false;
+  const originalFetch = harness.ctx.http.fetch.bind(harness.ctx.http);
+  const posted = [];
+  harness.ctx.http.fetch = async (url, init) => {
+    if (/\/check-runs/.test(url) && url.includes(NEW_SHA)) {
+      intakeHoldingLock = true;
+      await intakeEnteredCheckFetch;
+    }
+    if (/\/issues\/\d+\/comments$/.test(url) && init?.method === "POST") posted.push(url);
+    return originalFetch(url, init);
+  };
+
+  // Start the new-head synchronize: it takes the lock and blocks in the
+  // check-runs fetch.
+  const intakePromise = plugin.definition.onWebhook(
+    webhook("pull_request", "d-new-sync", pullPayload("synchronize", NEW_SHA)),
+  );
+  // Wait until the intake is demonstrably holding the lock (blocked on the
+  // gated fetch).
+  await waitUntil(() => intakeHoldingLock && activeLockCount() === 1);
+
+  // Now start the OLD-head REQUEST_CHANGES verdict while the intake still
+  // holds the lock. Pre-fix: freshness was evaluated OUTSIDE the lock on the
+  // old (pre-advance) state and passed, then the verdict waited on the lock;
+  // once the intake advanced and released, it POSTed a stale comment.
+  // Post-fix: the whole verdict path waits on the lock, then reads the
+  // post-advance state and is rejected as stale.
+  const verdictPromise = processStewardReviewResult(harness.ctx, signedReviewInput({
+    repository: route.repository, prNumber: 7, headSha: SHA, verdict: "request_changes",
+    issueId: issue.id, evidence: "stale old-head verdict",
+  }));
+
+  // Give the verdict a tick to reach its lock wait (post-fix) — or, pre-fix,
+  // to pass the out-of-lock freshness check and queue on the lock.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  // Release the intake: it advances the tracked revision to NEW_SHA and
+  // completes.
+  releaseIntake();
+  await intakePromise;
+
+  // The verdict now runs under the lock, observes the NEW_SHA state, and is
+  // rejected as stale (the endpoint throws on a rejected verdict).
+  await assert.rejects(verdictPromise, /rejected/);
+
+  // No stale GitHub comment, no publication, no block, state unchanged at
+  // NEW_SHA.
+  assert.equal(posted.length, 0, "a stale old-head verdict must never POST on GitHub");
+  const publications = await harness.ctx.entities.list({ entityType: "github-rereview-publication" });
+  assert.equal(publications.length, 0, "no publication record is written");
+  assert.equal((await harness.ctx.issues.get(issue.id, route.companyId)).status, "in_review",
+    "the old linked issue is not blocked by the stale verdict");
+  states = await harness.ctx.entities.list({ entityType: "github-rereview-state", externalId: `rereview:${route.repository}:7` });
+  assert.equal(states[0].data.revision, NEW_SHA, "the tracked revision advanced to the new head");
+  assert.equal(activeLockCount(), 0, "the lock map is clean after the race");
+});
+
+async function waitUntil(predicate, timeoutMs = 2000) {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error("waitUntil timed out");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}

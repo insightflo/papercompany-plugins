@@ -8,9 +8,17 @@
  * repository+PR+SHA+verdict, then blocks the exact linked issue. Verdicts are
  * fail-closed: they require the exact tracked head AND the exact linked
  * issueId recorded for that revision; stale verdicts are rejected and never
- * mutate GitHub. The REQUEST_CHANGES critical section shares the same
- * in-process repository+PR lock as the intake (`rereview-lock.ts`), so
- * concurrent identical verdicts publish exactly one comment and block once.
+ * mutate GitHub.
+ *
+ * The ENTIRE verdict path — state/revision load, `isVerdictFresh`, and the
+ * verdict handling — runs under the same in-process repository+PR lock the
+ * intake uses (`rereview-lock.ts`). This closes the TOCTOU where an old-head
+ * verdict could pass the freshness check outside the lock while a new-head
+ * intake was advancing the tracked revision inside the lock, then post a
+ * stale GitHub comment after the advance. With the shared lock, the verdict's
+ * freshness check observes the post-advance state and is rejected before any
+ * GitHub mutation. Concurrent identical verdicts also publish exactly one
+ * comment and block once.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { GitHubBridgeConfig } from "./config.js";
@@ -70,6 +78,24 @@ export async function acceptStewardReviewResult(
   const merge = route?.mergeApprovals;
   if (!route || !merge) return { accepted: false, reason: "mergeApprovals is not configured" };
 
+  // The WHOLE verdict path runs under the same repository+PR lock as the
+  // intake: load state/revision, evaluate freshness, and handle the verdict
+  // atomically. An old-head verdict cannot pass freshness on a pre-advance
+  // snapshot while a new-head intake is holding the lock and advancing the
+  // tracked revision — by the time the verdict runs, it observes the
+  // post-advance state and is rejected as stale before any GitHub mutation.
+  return withPrLock(input.repository, input.prNumber, () =>
+    acceptStewardReviewResultLocked(ctx, config, route, input),
+  );
+}
+
+async function acceptStewardReviewResultLocked(
+  ctx: PluginContext,
+  config: GitHubBridgeConfig,
+  route: NonNullable<GitHubBridgeConfig["repositories"][number]>,
+  input: StewardReviewResultInput,
+): Promise<{ accepted: boolean; reason: string }> {
+  const merge = route.mergeApprovals!;
   const { state } = await loadRereviewState(ctx, input.repository, input.prNumber);
   const { revision } = await loadRereviewRevision(ctx, input.repository, input.prNumber, input.headSha);
   const freshness = isVerdictFresh(state, revision, input.headSha, input.issueId);
@@ -85,15 +111,13 @@ export async function acceptStewardReviewResult(
   }
 
   if (input.verdict === "request_changes") {
-    // Serialize the REQUEST_CHANGES critical section on the SAME repository+PR
-    // key the intake uses: concurrent identical verdicts (webhook retries /
-    // parallel steward callbacks) must publish exactly one GitHub comment,
-    // write one publication record, and block the issue exactly once.
-    return withPrLock(input.repository, input.prNumber, () => postRequestChanges(ctx, route, input));
+    // Already inside the shared lock: no nested withPrLock here.
+    return postRequestChanges(ctx, route, input);
   }
   if (input.verdict === "pass") {
     // PASS → continue through the exact-SHA merge approval path. Revalidates
     // the exact PR revision and creates a Human Operator merge approval.
+    // The live exact-SHA gate inside requestMergeApproval is preserved.
     await requestMergeApproval(ctx, config, {
       repository: input.repository,
       prNumber: input.prNumber,
