@@ -250,65 +250,6 @@ export async function processStewardMergeRequest(ctx: PluginContext, input: Plug
 }
 
 /**
- * Handle a steward review-result delivery on the `steward-review-result`
- * endpoint. Authenticated with the same shared secret as the merge endpoint.
- * A PASS continues through the exact-SHA merge approval path; REQUEST_CHANGES
- * posts/updates evidence on the GitHub PR through the configured GitHub App.
- * A stale verdict (older than the tracked revision) is rejected.
- */
-export async function processStewardReviewResult(ctx: PluginContext, input: PluginWebhookInput): Promise<void> {
-  if (input.endpointKey !== "steward-review-result") {
-    throw new Error(`Unsupported webhook endpoint: ${input.endpointKey}`);
-  }
-  const config = requireBridgeConfig(await ctx.config.get());
-  if (!config.stewardApiSecretRef) throw new Error("steward review API is not configured (stewardApiSecretRef missing)");
-  const secret = await ctx.secrets.resolve(config.stewardApiSecretRef);
-  if (!verifyHmacSignature(input.rawBody, webhookHeader(input, "x-pc-signature-256"), secret)) {
-    throw new Error("Invalid steward review-result signature");
-  }
-  const request = parseStewardReviewResult(input.parsedBody ?? JSON.parse(input.rawBody));
-  if (!request) throw new Error("steward review-result body is incomplete");
-  const { acceptStewardReviewResult } = await import("./rereview-bridge.js");
-  const outcome = await acceptStewardReviewResult(ctx, config, request);
-  if (!outcome.accepted) {
-    throw new Error(`steward review-result rejected: ${outcome.reason}`);
-  }
-}
-
-export interface StewardReviewResult {
-  repository: string;
-  prNumber: number;
-  headSha: string;
-  verdict: "pass" | "request_changes";
-  issueId?: string;
-  evidence?: unknown;
-}
-
-export function parseStewardReviewResult(value: unknown): StewardReviewResult | null {
-  const raw = asRecord(value);
-  const repository = asString(raw.repository ?? raw.repo).toLowerCase();
-  const prNumber = asNumber(raw.prNumber ?? raw.pullRequestNumber ?? raw.pr);
-  const headSha = asString(raw.headSha ?? raw.sha ?? raw.head).toLowerCase();
-  const verdict = asString(raw.verdict ?? raw.decision).toLowerCase();
-  const issueId = asString(raw.issueId ?? raw.linkedIssueId);
-  if (
-    !repository || !/^[^/\s]+\/[^/\s]+$/.test(repository) ||
-    !prNumber || !/^[0-9a-f]{40}$/.test(headSha) ||
-    (verdict !== "pass" && verdict !== "request_changes")
-  ) {
-    return null;
-  }
-  return {
-    repository,
-    prNumber,
-    headSha,
-    verdict: verdict as "pass" | "request_changes",
-    issueId: issueId || undefined,
-    evidence: raw.evidence ?? raw.reviewEvidence ?? null,
-  };
-}
-
-/**
  * Revalidate the exact PR revision (fail-closed) and create one Human Operator
  * merge approval. Idempotent: a repeated steward request for the same PR+SHA is
  * a no-op; an older request for the same PR is superseded by the live head.

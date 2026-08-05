@@ -1,5 +1,5 @@
 import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk";
-import { requireBridgeConfig, type GitHubRepositoryRoute } from "./config.js";
+import { requireBridgeConfig, type GitHubBridgeConfig, type GitHubRepositoryRoute } from "./config.js";
 import { parseGitHubDelivery, type GitHubChange } from "./delivery.js";
 import { verifyGitHubSignature } from "./signature.js";
 import { parsePush, parseCommitCheck } from "./push-delivery.js";
@@ -58,6 +58,16 @@ function mirrorComment(change: GitHubChange): string | null {
   }
   if (!change.title.startsWith("Check:") && !change.title.startsWith("Workflow:")) return null;
   return [SOURCE_MARKER, `${change.title}: ${change.state || "unknown"}`, change.url].join("\n");
+}
+
+/**
+ * True when the structured re-review loop owns the delivery: on a
+ * mergeApprovals route, pull/issue_comment/review deliveries for PRs are
+ * processed by `processRereviewChange` (which mirrors user comments exactly
+ * once before any wake). The generic bridge mirror must not also mirror them.
+ */
+function isRereviewOwned(config: GitHubBridgeConfig, route: GitHubRepositoryRoute, change: GitHubChange): boolean {
+  return Boolean(route.mergeApprovals) && change.objectKind === "pull";
 }
 
 async function deliveryAlreadyHandled(ctx: PluginContext, deliveryId: string): Promise<boolean> {
@@ -162,8 +172,7 @@ export async function processGitHubWebhook(ctx: PluginContext, input: PluginWebh
   // revision/check authority for PRs on a mergeApprovals route so the steward
   // is woken exactly once per eligible head with issue context. Check and
   // workflow deliveries must NOT wake the steward directly.
-  const hasMergeRoute = Boolean(route.mergeApprovals);
-  if (hasMergeRoute && change.objectKind === "pull") {
+  if (isRereviewOwned(config, route, change)) {
     if (link && existing) {
       await processRereviewChange(ctx, config, route, route.mergeApprovals!, change);
     }
@@ -184,15 +193,15 @@ export async function processGitHubWebhook(ctx: PluginContext, input: PluginWebh
     // Structured re-review loop: on a mergeApprovals route the re-review
     // module owns the wake (exactly once per eligible head with issue context).
     // The generic per-delivery wake stays for non-merge routes only.
-    const hasMergeRoute = Boolean(route.mergeApprovals);
-    if (!(hasMergeRoute && change.objectKind === "pull")) {
+    if (!isRereviewOwned(config, route, change)) {
       await wakeExistingSteward(ctx, route, change);
     }
   }
   const comment = mirrorComment(change);
-  // On a mergeApprovals route the re-review module mirrors user comments once;
-  // do not also mirror synthetic check/workflow status comments here.
-  if (comment && !(hasMergeRoute && change.objectKind === "pull" && (change.title.startsWith("Check:") || change.title.startsWith("Workflow:")))) {
+  // The structured re-review loop owns user-comment mirroring for PRs on a
+  // mergeApprovals route (exactly once, before any wake) and suppresses the
+  // synthetic check/workflow status comments there. Mirror elsewhere.
+  if (comment && !(isRereviewOwned(config, route, change) && (change.comment || change.title.startsWith("Check:") || change.title.startsWith("Workflow:")))) {
     await ctx.issues.createComment(issueId, comment, route.companyId);
   }
 

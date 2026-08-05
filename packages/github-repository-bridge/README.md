@@ -115,28 +115,39 @@ for that PR. On success the plugin creates one Human Operator approval
 
 ## Structured re-review loop
 
-The bridge implements a structured natural re-review loop for PRs on a
-`mergeApprovals` route:
+The bridge implements a structured re-review loop for PRs on a `mergeApprovals`
+route:
 
-- **Same-issue reuse**: a new PR head reuses the existing linked Papercompany
-  issue; a second issue is never created for a new head.
-- **Comment-before-wake**: a GitHub comment is mirrored to the linked issue
-  BEFORE any steward wake, and is never parsed as execution authority.
-- **No check-event wake storm**: `check_run` / `workflow_run` deliveries never
-  wake the steward directly; they only contribute required-check conclusions.
+- **New issue per new head**: a genuinely new PR head SHA, after the
+  authoritative complete required-check set for that exact head passes, creates
+  exactly one NEW Papercompany review issue with the steward as assignee. The
+  initial PR review reuses the normal linked issue; every later head gets its
+  own issue. Issue creation/assignment is the existing execution trigger — the
+  bridge never calls `agents.invoke` and never passes Runtime invoke context.
+- **Never revive terminal issues**: a blocked/done/cancelled/closed issue (for
+  example an earlier REQUEST_CHANGES, including ones predating per-SHA state)
+  is never revived or reused as a review target; a new head gets a NEW issue.
 - **Exact-head authority**: `pull_request.synchronize` with a new exact 40-char
-  head SHA (plus live required-check state for that SHA through the GitHub App)
-  is the structured authority that advances the revision.
-- **Latest-SHA coalescing**: repeated deliveries are coalesced by the latest
-  head SHA; the steward is invoked exactly once per eligible revision.
-- **Issue-linked wake**: when the latest revision is eligible, the bridge moves
-  the same blocked issue back to reviewable state and invokes the steward
-  exactly once with exact `issueId` / `commentId` / `taskKey` context via the
-  Runtime wake contract, so the steward run is issue-linked (never an
-  `issueId null` run).
-- **Stale-verdict rejection**: a steward verdict whose head SHA is not the
-  tracked woken revision is rejected; it never posts on GitHub or routes to a
-  merge approval.
+  head SHA is the structured authority that advances the revision. A
+  `check_run` / `workflow_run` delivery never decides on its own: every check
+  delivery for the tracked head refetches the authoritative FULL check-run set
+  for that exact SHA through the GitHub App, then evaluates all required
+  checks. Eligibility is never completed by combining recorded webhook
+  conclusions alone.
+- **Deduplicated trigger**: the review is triggered at most once per
+  repository+PR+exact SHA, so synchronize/check webhook retries and concurrent
+  deliveries create exactly one issue per head. Concurrency safety: the Runtime
+  runs exactly one worker process per installed plugin, and the SDK dispatches
+  inbound webhook RPCs concurrently inside that worker, so the intake
+  serializes all deliveries for the same repository+PR through an in-process
+  promise mutex (the load→decide→create→record critical section is atomic);
+  after a worker restart the persisted per-SHA revision record dedupes.
+- **Comment mirroring**: GitHub comments are mirrored to the review issue
+  exactly once and are never parsed as execution authority; bridge-origin
+  comments are never re-mirrored (no comment loops).
+- **Stale-verdict rejection**: a steward verdict is fail-closed — it requires
+  the exact tracked head AND the exact linked issueId recorded for that
+  revision; a stale verdict is rejected and never mutates GitHub.
 
 ### Steward review-result endpoint
 
@@ -154,7 +165,7 @@ Signed with the same `x-pc-signature-256` HMAC as the merge endpoint:
   "prNumber": 42,
   "headSha": "<exact 40-char pull-request head SHA>",
   "verdict": "pass | request_changes",
-  "issueId": "<linked Papercompany issue id>",
+  "issueId": "<exact review issue id recorded for that head (required for both verdicts)>",
   "evidence": { "summary": "...", "notes": [...] }
 }
 ```
@@ -163,63 +174,14 @@ Signed with the same `x-pc-signature-256` HMAC as the merge endpoint:
   (identical to `steward-merge-request`).
 - `verdict: "request_changes"` posts/updates the evidence on the GitHub PR
   through the configured GitHub App (`POST /issues/{pr}/comments` with the
-  steward evidence), so REQUEST_CHANGES is visible on the PR.
-- A stale verdict (head SHA older than the tracked revision) is rejected and
-  never mutates GitHub.
-
-## Structured re-review loop
-
-The bridge implements a structured natural re-review loop for PRs on a
-`mergeApprovals` route:
-
-- **Same-issue reuse**: a new PR head reuses the existing linked Papercompany
-  issue; a second issue is never created for a new head.
-- **Comment-before-wake**: a GitHub comment is mirrored to the linked issue
-  BEFORE any steward wake, and is never parsed as execution authority.
-- **No check-event wake storm**: `check_run` / `workflow_run` deliveries never
-  wake the steward directly; they only contribute required-check conclusions.
-- **Exact-head authority**: `pull_request.synchronize` with a new exact 40-char
-  head SHA (plus live required-check state for that SHA through the GitHub App)
-  is the structured authority that advances the revision.
-- **Latest-SHA coalescing**: repeated deliveries are coalesced by the latest
-  head SHA; the steward is invoked exactly once per eligible revision.
-- **Issue-linked wake**: when the latest revision is eligible, the bridge moves
-  the same blocked issue back to reviewable state and invokes the steward
-  exactly once with exact `issueId` / `commentId` / `taskKey` context via the
-  Runtime wake contract, so the steward run is issue-linked (never an
-  `issueId null` run).
-- **Stale-verdict rejection**: a steward verdict whose head SHA is not the
-  tracked woken revision is rejected; it never posts on GitHub or routes to a
-  merge approval.
-
-### Steward review-result endpoint
-
-The structured, authenticated steward review-result path is:
-
-```text
-POST /api/plugins/insightflo.github-repository-bridge/webhooks/steward-review-result
-```
-
-Signed with the same `x-pc-signature-256` HMAC as the merge endpoint:
-
-```json
-{
-  "repository": "insightflo/papercompany-runtime",
-  "prNumber": 42,
-  "headSha": "<exact 40-char pull-request head SHA>",
-  "verdict": "pass | request_changes",
-  "issueId": "<linked Papercompany issue id>",
-  "evidence": { "summary": "...", "notes": [...] }
-}
-```
-
-- `verdict: "pass"` continues through the exact-SHA merge approval path
-  (identical to `steward-merge-request`).
-- `verdict: "request_changes"` posts/updates the evidence on the GitHub PR
-  through the configured GitHub App (`POST /issues/{pr}/comments` with the
-  steward evidence), so REQUEST_CHANGES is visible on the PR.
-- A stale verdict (head SHA older than the tracked revision) is rejected and
-  never mutates GitHub.
+  steward evidence), idempotently per repository+PR+SHA+verdict, then blocks
+  the exact review issue. The blocked issue stays terminal and is never
+  revived.
+- Fail-closed: BOTH verdicts require the exact 40-char `headSha` AND the exact
+  `issueId` of the review issue recorded for that revision. A missing/blank
+  `issueId` or a stale verdict (older head, or an issueId that does not match
+  the revision's recorded issue) is rejected at the endpoint with no GitHub
+  side effect.
 
 On an approved merge approval the plugin revalidates the exact head and gates
 again and then performs a single squash merge through the GitHub App:

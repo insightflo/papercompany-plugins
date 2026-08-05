@@ -2,7 +2,8 @@ import { definePlugin, runWorker, type PluginContext, type PluginEvent } from "@
 import { processGitHubWebhook } from "./bridge.js";
 import { validateBridgeConfig, requireBridgeConfig } from "./config.js";
 import { handleApprovalDecided, drainOutbox } from "./deploy-approvals.js";
-import { processStewardMergeRequest, processStewardReviewResult, drainMergeOutbox } from "./merge-approvals.js";
+import { processStewardMergeRequest, drainMergeOutbox } from "./merge-approvals.js";
+import { processStewardReviewResult } from "./steward-review.js";
 
 let pluginContext: PluginContext | null = null;
 
