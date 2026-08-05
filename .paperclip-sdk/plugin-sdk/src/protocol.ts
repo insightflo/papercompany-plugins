@@ -652,18 +652,7 @@ export interface WorkerToHostMethods {
     result: Agent,
   ];
   "agents.invoke": [
-    params: {
-      agentId: string;
-      companyId: string;
-      prompt: string;
-      reason?: string;
-      /** Structured wake context tying the run to an issue and optional wake comment. */
-      context?: {
-        issueId?: string;
-        commentId?: string;
-        taskKey?: string;
-      };
-    },
+    params: { agentId: string; companyId: string; prompt: string; reason?: string },
     result: { runId: string },
   ];
 
