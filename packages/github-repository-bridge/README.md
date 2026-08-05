@@ -113,6 +113,76 @@ same PR+SHA is idempotent; a PASS for an older head supersedes any stored reques
 for that PR. On success the plugin creates one Human Operator approval
 (`payload.kind = "merge"`), distinct from a deployment approval.
 
+## Structured re-review loop
+
+The bridge implements a structured re-review loop for PRs on a `mergeApprovals`
+route:
+
+- **New issue per new head**: a genuinely new PR head SHA, after the
+  authoritative complete required-check set for that exact head passes, creates
+  exactly one NEW Papercompany review issue with the steward as assignee. The
+  initial PR review reuses the normal linked issue; every later head gets its
+  own issue. Issue creation/assignment is the existing execution trigger — the
+  bridge never calls `agents.invoke` and never passes Runtime invoke context.
+- **Never revive terminal issues**: a blocked/done/cancelled/closed issue (for
+  example an earlier REQUEST_CHANGES, including ones predating per-SHA state)
+  is never revived or reused as a review target; a new head gets a NEW issue.
+- **Exact-head authority**: `pull_request.synchronize` with a new exact 40-char
+  head SHA is the structured authority that advances the revision. A
+  `check_run` / `workflow_run` delivery never decides on its own: every check
+  delivery for the tracked head refetches the authoritative FULL check-run set
+  for that exact SHA through the GitHub App, then evaluates all required
+  checks. Eligibility is never completed by combining recorded webhook
+  conclusions alone.
+- **Deduplicated trigger**: the review is triggered at most once per
+  repository+PR+exact SHA, so synchronize/check webhook retries and concurrent
+  deliveries create exactly one issue per head. Concurrency safety: the Runtime
+  runs exactly one worker process per installed plugin, and the SDK dispatches
+  inbound webhook RPCs concurrently inside that worker, so the intake
+  serializes all deliveries for the same repository+PR through an in-process
+  promise mutex (the load→decide→create→record critical section is atomic);
+  after a worker restart the persisted per-SHA revision record dedupes.
+- **Comment mirroring**: GitHub comments are mirrored to the review issue
+  exactly once and are never parsed as execution authority; bridge-origin
+  comments are never re-mirrored (no comment loops).
+- **Stale-verdict rejection**: a steward verdict is fail-closed — it requires
+  the exact tracked head AND the exact linked issueId recorded for that
+  revision; a stale verdict is rejected and never mutates GitHub.
+
+### Steward review-result endpoint
+
+The structured, authenticated steward review-result path is:
+
+```text
+POST /api/plugins/insightflo.github-repository-bridge/webhooks/steward-review-result
+```
+
+Signed with the same `x-pc-signature-256` HMAC as the merge endpoint:
+
+```json
+{
+  "repository": "insightflo/papercompany-runtime",
+  "prNumber": 42,
+  "headSha": "<exact 40-char pull-request head SHA>",
+  "verdict": "pass | request_changes",
+  "issueId": "<exact review issue id recorded for that head (required for both verdicts)>",
+  "evidence": { "summary": "...", "notes": [...] }
+}
+```
+
+- `verdict: "pass"` continues through the exact-SHA merge approval path
+  (identical to `steward-merge-request`).
+- `verdict: "request_changes"` posts/updates the evidence on the GitHub PR
+  through the configured GitHub App (`POST /issues/{pr}/comments` with the
+  steward evidence), idempotently per repository+PR+SHA+verdict, then blocks
+  the exact review issue. The blocked issue stays terminal and is never
+  revived.
+- Fail-closed: BOTH verdicts require the exact 40-char `headSha` AND the exact
+  `issueId` of the review issue recorded for that revision. A missing/blank
+  `issueId` or a stale verdict (older head, or an issueId that does not match
+  the revision's recorded issue) is rejected at the endpoint with no GitHub
+  side effect.
+
 On an approved merge approval the plugin revalidates the exact head and gates
 again and then performs a single squash merge through the GitHub App:
 

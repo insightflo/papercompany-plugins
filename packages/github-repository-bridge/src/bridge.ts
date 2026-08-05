@@ -1,9 +1,10 @@
 import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk";
-import { requireBridgeConfig, type GitHubRepositoryRoute } from "./config.js";
+import { requireBridgeConfig, type GitHubBridgeConfig, type GitHubRepositoryRoute } from "./config.js";
 import { parseGitHubDelivery, type GitHubChange } from "./delivery.js";
 import { verifyGitHubSignature } from "./signature.js";
 import { parsePush, parseCommitCheck } from "./push-delivery.js";
 import { processPush, processCommitCheck } from "./deploy-approvals.js";
+import { processRereviewChange } from "./rereview-bridge.js";
 
 const DELIVERY_ENTITY = "github-delivery";
 const LINK_ENTITY = "github-object-link";
@@ -57,6 +58,16 @@ function mirrorComment(change: GitHubChange): string | null {
   }
   if (!change.title.startsWith("Check:") && !change.title.startsWith("Workflow:")) return null;
   return [SOURCE_MARKER, `${change.title}: ${change.state || "unknown"}`, change.url].join("\n");
+}
+
+/**
+ * True when the structured re-review loop owns the delivery: on a
+ * mergeApprovals route, pull/issue_comment/review deliveries for PRs are
+ * processed by `processRereviewChange` (which mirrors user comments exactly
+ * once before any wake). The generic bridge mirror must not also mirror them.
+ */
+function isRereviewOwned(config: GitHubBridgeConfig, route: GitHubRepositoryRoute, change: GitHubChange): boolean {
+  return Boolean(route.mergeApprovals) && change.objectKind === "pull";
 }
 
 async function deliveryAlreadyHandled(ctx: PluginContext, deliveryId: string): Promise<boolean> {
@@ -157,6 +168,16 @@ export async function processGitHubWebhook(ctx: PluginContext, input: PluginWebh
   const existing = issueId ? await ctx.issues.get(issueId, route.companyId) : null;
   if (link && !existing) throw new Error(`GitHub mapping conflict for ${linkExternalId}`);
 
+  // Structured re-review loop: before the generic issue mirroring, apply the
+  // revision/check authority for PRs on a mergeApprovals route so the steward
+  // is woken exactly once per eligible head with issue context. Check and
+  // workflow deliveries must NOT wake the steward directly.
+  if (isRereviewOwned(config, route, change)) {
+    if (link && existing) {
+      await processRereviewChange(ctx, config, route, route.mergeApprovals!, change);
+    }
+  }
+
   if (!existing) {
     const issue = await createLinkedIssue(ctx, route, change);
     issueId = issue.id;
@@ -169,10 +190,20 @@ export async function processGitHubWebhook(ctx: PluginContext, input: PluginWebh
       } : {}),
       ...(change.action === "closed" || change.action === "reopened" ? { status: issueStatus(change) } : {}),
     }, route.companyId);
-    await wakeExistingSteward(ctx, route, change);
+    // Structured re-review loop: on a mergeApprovals route the re-review
+    // module owns the wake (exactly once per eligible head with issue context).
+    // The generic per-delivery wake stays for non-merge routes only.
+    if (!isRereviewOwned(config, route, change)) {
+      await wakeExistingSteward(ctx, route, change);
+    }
   }
   const comment = mirrorComment(change);
-  if (comment) await ctx.issues.createComment(issueId, comment, route.companyId);
+  // The structured re-review loop owns user-comment mirroring for PRs on a
+  // mergeApprovals route (exactly once, before any wake) and suppresses the
+  // synthetic check/workflow status comments there. Mirror elsewhere.
+  if (comment && !(isRereviewOwned(config, route, change) && (change.comment || change.title.startsWith("Check:") || change.title.startsWith("Workflow:")))) {
+    await ctx.issues.createComment(issueId, comment, route.companyId);
+  }
 
   await ctx.entities.upsert({
     entityType: LINK_ENTITY,
