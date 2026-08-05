@@ -140,3 +140,53 @@ test("missing issueId is rejected at the endpoint with no GitHub side effect", a
     assert.notEqual(current.status, "blocked", "no issue is blocked by an incomplete verdict");
   }
 });
+
+test("true concurrency: two identical REQUEST_CHANGES verdicts publish ONE comment, ONE record, ONE block", async () => {
+  const { harness } = await setupHarness();
+  const review = await establishWokenReview(harness);
+  assert.ok(review);
+
+  // Intentional delay on the GitHub comment POST so that, WITHOUT the shared
+  // repository+PR lock, the second verdict would run its publication lookup
+  // while the first POST is still in flight (both would see "no publication"
+  // and both would POST). With the lock, the second verdict waits for the
+  // first critical section to finish, then dedupes on the persisted
+  // publication record and never POSTs.
+  const originalFetch = harness.ctx.http.fetch.bind(harness.ctx.http);
+  const posted = [];
+  let activePosts = 0;
+  let maxActivePosts = 0;
+  harness.ctx.http.fetch = async (url, init) => {
+    if (/\/issues\/\d+\/comments$/.test(url) && init?.method === "POST") {
+      posted.push(url);
+      activePosts += 1;
+      maxActivePosts = Math.max(maxActivePosts, activePosts);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      try {
+        return await originalFetch(url, init);
+      } finally {
+        activePosts -= 1;
+      }
+    }
+    return originalFetch(url, init);
+  };
+
+  const input = signedReviewInput({
+    repository: route.repository, prNumber: 7, headSha: NEW_SHA, verdict: "request_changes",
+    issueId: review.id, evidence: "Gate is flaky; please rerun.",
+  });
+  // Two genuinely concurrent identical verdicts (webhook retry / parallel
+  // steward callback).
+  await Promise.all([
+    processStewardReviewResult(harness.ctx, input),
+    processStewardReviewResult(harness.ctx, input),
+  ]);
+
+  assert.equal(posted.length, 1, "exactly one GitHub comment POST across two concurrent identical verdicts");
+  assert.equal(maxActivePosts, 1, "the shared lock never allowed two concurrent GitHub POSTs");
+  const publications = await harness.ctx.entities.list({ entityType: "github-rereview-publication" });
+  assert.equal(publications.length, 1, "exactly one publication record");
+  assert.equal((await harness.ctx.issues.get(review.id, route.companyId)).status, "blocked");
+  const revisions = await harness.ctx.entities.list({ entityType: "github-rereview-issue" });
+  assert.equal(revisions.filter((revision) => revision.data.sha === NEW_SHA).length, 1);
+});

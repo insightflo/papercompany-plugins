@@ -8,7 +8,9 @@
  * repository+PR+SHA+verdict, then blocks the exact linked issue. Verdicts are
  * fail-closed: they require the exact tracked head AND the exact linked
  * issueId recorded for that revision; stale verdicts are rejected and never
- * mutate GitHub.
+ * mutate GitHub. The REQUEST_CHANGES critical section shares the same
+ * in-process repository+PR lock as the intake (`rereview-lock.ts`), so
+ * concurrent identical verdicts publish exactly one comment and block once.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { GitHubBridgeConfig } from "./config.js";
@@ -21,6 +23,7 @@ import {
 } from "./rereview.js";
 import { mintGitHubAppInstallationToken } from "./github-app-auth.js";
 import { requestMergeApproval } from "./merge-approvals.js";
+import { withPrLock } from "./rereview-lock.js";
 import {
   githubHeaders,
   loadRereviewState,
@@ -82,7 +85,11 @@ export async function acceptStewardReviewResult(
   }
 
   if (input.verdict === "request_changes") {
-    return postRequestChanges(ctx, route, input);
+    // Serialize the REQUEST_CHANGES critical section on the SAME repository+PR
+    // key the intake uses: concurrent identical verdicts (webhook retries /
+    // parallel steward callbacks) must publish exactly one GitHub comment,
+    // write one publication record, and block the issue exactly once.
+    return withPrLock(input.repository, input.prNumber, () => postRequestChanges(ctx, route, input));
   }
   if (input.verdict === "pass") {
     // PASS → continue through the exact-SHA merge approval path. Revalidates

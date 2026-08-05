@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import plugin from "../src/worker.ts";
+import { withPrLock, activeLockCount } from "../src/rereview-lock.ts";
 import {
   NEW_SHA,
   webhook,
@@ -62,4 +63,46 @@ test("true concurrency: two simultaneous deliveries of the same new head create 
   const revisions = await harness.ctx.entities.list({ entityType: "github-rereview-issue" });
   assert.equal(revisions.length, 1, "exactly one revision record for the SHA");
   assert.equal(revisions[0].data.issueId, review.id);
+});
+
+test("lock cleanup: the shared lock map empties after concurrent critical sections, including failures", async () => {
+  assert.equal(activeLockCount(), 0);
+
+  // A failing critical section must not poison the chain or leak the key.
+  await assert.rejects(
+    withPrLock("acme/runtime", 7, async () => {
+      throw new Error("boom");
+    }),
+    /boom/,
+  );
+  assert.equal(activeLockCount(), 0, "a failed critical section still cleans up its lock key");
+
+  // Concurrent runs on the same key serialize; a later run on a DIFFERENT key
+  // is independent; all keys are removed once everything settles.
+  let runtimeActive = 0;
+  let runtimeMaxActive = 0;
+  const runtimeWork = async () => {
+    runtimeActive += 1;
+    runtimeMaxActive = Math.max(runtimeMaxActive, runtimeActive);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    runtimeActive -= 1;
+  };
+  let otherActive = 0;
+  let otherMaxActive = 0;
+  const otherWork = async () => {
+    otherActive += 1;
+    otherMaxActive = Math.max(otherMaxActive, otherActive);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    otherActive -= 1;
+  };
+  await Promise.all([
+    withPrLock("acme/runtime", 7, runtimeWork),
+    withPrLock("acme/runtime", 7, runtimeWork),
+    withPrLock("acme/runtime", 7, runtimeWork),
+    withPrLock("acme/other", 2, otherWork),
+  ]);
+
+  assert.equal(runtimeMaxActive, 1, "same-key runs never overlap inside the lock");
+  assert.equal(otherMaxActive, 1, "the other key's runs also serialize");
+  assert.equal(activeLockCount(), 0, "the lock map is fully cleaned up after concurrent critical sections");
 });

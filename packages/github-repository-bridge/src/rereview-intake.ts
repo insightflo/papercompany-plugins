@@ -44,41 +44,10 @@ import {
   issueIdForHead,
   mirrorCommentForHead,
 } from "./rereview-issue.js";
+import { withPrLock } from "./rereview-lock.js";
 
 function normalizeShaForState(sha: string): string {
   return normalizeSha(sha);
-}
-
-/**
- * In-process per-repository+PR mutex. The Runtime runs exactly ONE worker
- * process per installed plugin (plugin-worker-manager.ts: "One worker process
- * per installed plugin"), while the SDK worker-rpc-host dispatches inbound
- * webhook RPCs fire-and-forget — so deliveries CAN run concurrently inside
- * the worker. This mutex serializes all deliveries for the same PR, making
- * the load→decide→create→record critical section of the re-review intake
- * atomic within the worker: concurrent deliveries of the same head create
- * exactly one review issue. After a worker restart the persisted per-SHA
- * revision record dedupes. Deliveries for different PRs never contend.
- */
-const prLocks = new Map<string, Promise<unknown>>();
-
-async function withPrLock<T>(
-  repository: string,
-  prNumber: number,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const key = `${repository.toLowerCase()}#${prNumber}`;
-  const previous = prLocks.get(key) ?? Promise.resolve();
-  const run = previous.catch(() => undefined).then(fn);
-  // Keep the chain alive regardless of outcome so the next delivery waits.
-  prLocks.set(key, run.catch(() => undefined));
-  try {
-    return await run;
-  } finally {
-    if (prLocks.get(key) === run) {
-      prLocks.delete(key);
-    }
-  }
 }
 
 /**
