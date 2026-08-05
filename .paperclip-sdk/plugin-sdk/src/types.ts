@@ -910,7 +910,23 @@ export interface PluginAgentsClient {
   /** Resume a paused agent (sets status to idle). Throws if terminated, pending_approval, or not found. Requires `agents.resume`. */
   resume(agentId: string, companyId: string): Promise<Agent>;
   /** Invoke (wake up) an agent with a prompt payload. Throws if paused, terminated, pending_approval, or not found. Requires `agents.invoke`. */
-  invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }): Promise<{ runId: string }>;
+  invoke(agentId: string, companyId: string, opts: {
+    prompt: string;
+    reason?: string;
+    /**
+     * Structured wake context tying the run to an issue and optional wake
+     * comment. The host validates that the issue belongs to `companyId` and
+     * that the comment belongs to that exact issue before waking the agent.
+     */
+    context?: {
+      /** UUID of the issue to tie the run to. Must belong to `companyId`. */
+      issueId?: string;
+      /** UUID of the wake comment. Must belong to the supplied issue. */
+      commentId?: string;
+      /** Optional task key (defaults to the issue id at runtime). */
+      taskKey?: string;
+    };
+  }): Promise<{ runId: string }>;
   /** Create, message, and close agent chat sessions. Requires `agent.sessions.*` capabilities. */
   sessions: PluginAgentSessionsClient;
 }

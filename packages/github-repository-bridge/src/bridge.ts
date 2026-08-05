@@ -4,6 +4,7 @@ import { parseGitHubDelivery, type GitHubChange } from "./delivery.js";
 import { verifyGitHubSignature } from "./signature.js";
 import { parsePush, parseCommitCheck } from "./push-delivery.js";
 import { processPush, processCommitCheck } from "./deploy-approvals.js";
+import { processRereviewChange } from "./rereview-bridge.js";
 
 const DELIVERY_ENTITY = "github-delivery";
 const LINK_ENTITY = "github-object-link";
@@ -157,6 +158,17 @@ export async function processGitHubWebhook(ctx: PluginContext, input: PluginWebh
   const existing = issueId ? await ctx.issues.get(issueId, route.companyId) : null;
   if (link && !existing) throw new Error(`GitHub mapping conflict for ${linkExternalId}`);
 
+  // Structured re-review loop: before the generic issue mirroring, apply the
+  // revision/check authority for PRs on a mergeApprovals route so the steward
+  // is woken exactly once per eligible head with issue context. Check and
+  // workflow deliveries must NOT wake the steward directly.
+  const hasMergeRoute = Boolean(route.mergeApprovals);
+  if (hasMergeRoute && change.objectKind === "pull") {
+    if (link && existing) {
+      await processRereviewChange(ctx, config, route, route.mergeApprovals!, change);
+    }
+  }
+
   if (!existing) {
     const issue = await createLinkedIssue(ctx, route, change);
     issueId = issue.id;
@@ -169,10 +181,20 @@ export async function processGitHubWebhook(ctx: PluginContext, input: PluginWebh
       } : {}),
       ...(change.action === "closed" || change.action === "reopened" ? { status: issueStatus(change) } : {}),
     }, route.companyId);
-    await wakeExistingSteward(ctx, route, change);
+    // Structured re-review loop: on a mergeApprovals route the re-review
+    // module owns the wake (exactly once per eligible head with issue context).
+    // The generic per-delivery wake stays for non-merge routes only.
+    const hasMergeRoute = Boolean(route.mergeApprovals);
+    if (!(hasMergeRoute && change.objectKind === "pull")) {
+      await wakeExistingSteward(ctx, route, change);
+    }
   }
   const comment = mirrorComment(change);
-  if (comment) await ctx.issues.createComment(issueId, comment, route.companyId);
+  // On a mergeApprovals route the re-review module mirrors user comments once;
+  // do not also mirror synthetic check/workflow status comments here.
+  if (comment && !(hasMergeRoute && change.objectKind === "pull" && (change.title.startsWith("Check:") || change.title.startsWith("Workflow:")))) {
+    await ctx.issues.createComment(issueId, comment, route.companyId);
+  }
 
   await ctx.entities.upsert({
     entityType: LINK_ENTITY,

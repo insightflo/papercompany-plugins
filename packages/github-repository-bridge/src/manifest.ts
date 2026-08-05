@@ -42,6 +42,11 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Steward Merge Request",
       description: "Authenticated internal API a repository steward calls with a PASS verdict to request a Human Operator PR squash-merge approval.",
     },
+    {
+      endpointKey: "steward-review-result",
+      displayName: "Steward Review Result",
+      description: "Authenticated internal API a repository steward calls with a structured PASS or REQUEST_CHANGES verdict; PASS routes to the merge approval, REQUEST_CHANGES posts evidence on the PR.",
+    },
   ],
   jobs: [
     {

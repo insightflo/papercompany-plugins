@@ -71,6 +71,8 @@ export interface TestHarness {
   logs: TestHarnessLogEntry[];
   activity: Array<{ message: string; entityType?: string; entityId?: string; metadata?: Record<string, unknown> }>;
   metrics: Array<{ name: string; value: number; tags?: Record<string, string> }>;
+  /** Recorded `ctx.agents.invoke` wake calls, in order, for assertions. */
+  wakes: Array<{ agentId: string; companyId: string; prompt: string; reason?: string; context?: Record<string, unknown> }>;
 }
 
 type EventRegistration = {
@@ -143,6 +145,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
   const projectWorkspaces = new Map<string, PluginWorkspace[]>();
+  const wakes: TestHarness["wakes"] = [];
 
   const sessions = new Map<string, AgentSession>();
   const sessionEventCallbacks = new Map<string, (event: AgentSessionEvent) => void>();
@@ -502,6 +505,19 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         ) {
           throw new Error(`Agent is not invokable in its current state: ${agent!.status}`);
         }
+        const issueId = opts.context?.issueId;
+        if (issueId) {
+          const issue = issues.get(issueId);
+          if (!isInCompany(issue, cid)) throw new Error(`Issue not found: ${issueId}`);
+        }
+        const commentId = opts.context?.commentId;
+        if (commentId) {
+          const comments = issueComments.get(issueId ?? "") ?? [];
+          if (!comments.some((comment) => comment.id === commentId)) {
+            throw new Error(`Comment not found for issue: ${commentId}`);
+          }
+        }
+        wakes.push({ agentId, companyId: cid, prompt: opts.prompt, reason: opts.reason, context: opts.context });
         return { runId: randomUUID() };
       },
       sessions: {
@@ -735,6 +751,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     logs,
     activity,
     metrics,
+    wakes,
   };
 
   return harness;

@@ -2,13 +2,14 @@ import { definePlugin, runWorker, type PluginContext, type PluginEvent } from "@
 import { processGitHubWebhook } from "./bridge.js";
 import { validateBridgeConfig, requireBridgeConfig } from "./config.js";
 import { handleApprovalDecided, drainOutbox } from "./deploy-approvals.js";
-import { processStewardMergeRequest, drainMergeOutbox } from "./merge-approvals.js";
+import { processStewardMergeRequest, processStewardReviewResult, drainMergeOutbox } from "./merge-approvals.js";
 
 let pluginContext: PluginContext | null = null;
 
 const DRAIN_JOB_KEY = "drain-dispatch-outbox";
 const DRAIN_MERGE_JOB_KEY = "drain-merge-outbox";
 const STEWARD_ENDPOINT = "steward-merge-request";
+const STEWARD_REVIEW_ENDPOINT = "steward-review-result";
 
 const plugin = definePlugin({
   async setup(ctx: PluginContext) {
@@ -64,6 +65,8 @@ const plugin = definePlugin({
     if (!ctx) throw new Error("GitHub Repository Bridge is not initialized");
     if (input.endpointKey === STEWARD_ENDPOINT) {
       await processStewardMergeRequest(ctx, input);
+    } else if (input.endpointKey === STEWARD_REVIEW_ENDPOINT) {
+      await processStewardReviewResult(ctx, input);
     } else {
       await processGitHubWebhook(ctx, input);
     }
