@@ -478,7 +478,7 @@ async function ensureMirrorIssue(
   ctx: PluginContext,
   sourceIssue: IssueRecord,
   config: BridgePluginConfig,
-): Promise<"created" | "already-linked" | "not-matched" | "skipped-provider"> {
+): Promise<"created" | "already-linked" | "not-matched" | "skipped-provider" | "skipped-unconfigured"> {
   const sourceIssueId = sourceIssue.id;
   const sourceTitle = sourceIssue.title;
   const sourceDescription = asString((sourceIssue as unknown as JsonRecord | undefined)?.description);
@@ -486,6 +486,14 @@ async function ensureMirrorIssue(
 
   if (!matchesRequesterSignal(sourceTitle, sourceLabels, config)) {
     return "not-matched";
+  }
+
+  if (!config.providerCompanyId && !config.providerCompanyName) {
+    ctx.logger.warn("Auto mirror skipped because provider company is not configured", {
+      companyId: sourceIssue.companyId,
+      issueId: sourceIssueId,
+    });
+    return "skipped-unconfigured";
   }
 
   const providerCompany = await resolveProviderCompany(ctx, config);
