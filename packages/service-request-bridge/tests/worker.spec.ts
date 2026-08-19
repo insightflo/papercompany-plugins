@@ -283,5 +283,109 @@ describe("service-request-bridge worker", () => {
       status: "blocked",
     });
   });
+
+  it("skips auto mirror without a failure comment when provider company is not configured at all", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities, "issue.comments.read"],
+      config: {
+        requesterLabelNames: [],
+        requesterTitlePrefixes: ["maintenance"],
+        autoCreateMirrorIssue: true,
+      },
+    });
+
+    harness.seed({
+      companies: [
+        makeCompany("company-source", "Source Co", "SRC"),
+        makeCompany("company-provider", "Provider Co", "PRV"),
+      ],
+      issues: [
+        makeIssue({
+          id: "issue-source",
+          companyId: "company-source",
+          title: "[maintenance] Maintenance request",
+          status: "todo",
+          identifier: "SRC-1",
+        }),
+      ],
+    });
+
+    await worker.definition.setup(harness.ctx);
+
+    await harness.emit("issue.created", {
+      companyId: "company-source",
+      issueId: "issue-source",
+      title: "[maintenance] Maintenance request",
+      description: "Need maintenance support",
+    }, {
+      entityId: "issue-source",
+      entityType: "issue",
+      eventId: "evt-created-unconfigured-1",
+      companyId: "company-source",
+    });
+
+    const providerIssues = await harness.ctx.issues.list({ companyId: "company-provider", limit: 50, offset: 0 });
+    expect(providerIssues).toHaveLength(0);
+
+    const sourceIssue = await harness.ctx.issues.get("issue-source", "company-source");
+    expect(sourceIssue?.status).toBe("todo");
+
+    const comments = await harness.ctx.issues.listComments("issue-source", "company-source");
+    expect(comments).toHaveLength(0);
+
+    const errorLogs = harness.logs.filter((entry) => entry.level === "error");
+    expect(errorLogs).toHaveLength(0);
+  });
+
+  it("still records a bridge failure comment when a configured provider company cannot be resolved", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities, "issue.comments.read"],
+      config: {
+        providerCompanyName: "Ghost Provider Co",
+        requesterLabelNames: [],
+        requesterTitlePrefixes: ["maintenance"],
+        autoCreateMirrorIssue: true,
+      },
+    });
+
+    harness.seed({
+      companies: [
+        makeCompany("company-source", "Source Co", "SRC"),
+        makeCompany("company-provider", "Provider Co", "PRV"),
+      ],
+      issues: [
+        makeIssue({
+          id: "issue-source",
+          companyId: "company-source",
+          title: "[maintenance] Maintenance request",
+          status: "todo",
+          identifier: "SRC-1",
+        }),
+      ],
+    });
+
+    await worker.definition.setup(harness.ctx);
+
+    await harness.emit("issue.created", {
+      companyId: "company-source",
+      issueId: "issue-source",
+      title: "[maintenance] Maintenance request",
+      description: "Need maintenance support",
+    }, {
+      entityId: "issue-source",
+      entityType: "issue",
+      eventId: "evt-created-unresolvable-1",
+      companyId: "company-source",
+    });
+
+    const providerIssues = await harness.ctx.issues.list({ companyId: "company-provider", limit: 50, offset: 0 });
+    expect(providerIssues).toHaveLength(0);
+
+    const comments = await harness.ctx.issues.listComments("issue-source", "company-source");
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Provider company is not configured or not found: Ghost Provider Co");
+  });
 });
 
