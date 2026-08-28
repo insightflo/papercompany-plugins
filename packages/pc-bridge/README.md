@@ -68,6 +68,61 @@ UI는 이 사실을 그대로 표기하며, 각 디스패치의 성공/실패는
 3. **UI 수동 디스패치** — 사이드바 "PC Bridge" 페이지에서 핸들러 이름 + params JSON으로
    임의의 등록 핸들러를 호출하고, 최근 디스패치 이력과 체인 구조 설명을 본다.
 
+## 운영자 PC 설정 (필수) — 플러그인 설치만으로는 동작하지 않습니다
+
+플러그인은 서버에서 큐에 줄을 넣는 역할만 합니다. 실제 실행은 운영자 PC(맥)에서 `tail_channel.py`가 큐를 따라가 핸들러를 돌립니다. PC 쪽을 안 띄우면 호출이 쌓이기만 합니다.
+
+### 1. 파일 복사
+
+이 저장소의 `pc-bridge-mac/`이 배포 원본입니다. PC의 `~/.naver-bridge/bridge/`로 복사합니다:
+
+```sh
+mkdir -p ~/.naver-bridge/bridge/state
+cp -r pc-bridge-mac/bridge_server.py pc-bridge-mac/handlers pc-bridge-mac/pc-bridge-tunnel.sh ~/.naver-bridge/bridge/
+cp pc-bridge-mac/tail_channel.py ~/.naver-bridge/
+chmod +x ~/.naver-bridge/bridge/handlers/*
+```
+
+### 2. 키 설정 (서버와 PC가 같은 키)
+
+```sh
+echo 'PC_BRIDGE_KEY=여기에_긴_랜덤_문자열' > ~/.naver-bridge/bridge/state/bridge.env
+chmod 600 ~/.naver-bridge/bridge/state/bridge.env
+# 보드 플러그인 설정에도 같은 값을 webhookKey(또는 webhookKeyRef)로 넣기
+```
+
+같은 키가 **서버 플러그인 설정**과 **PC `bridge.env`**에 있어야 인증이 됩니다.
+
+### 3. 핸들러 추가
+
+`~/.naver-bridge/bridge/handlers/<이름>`에 실행 파일을 만들면 됩니다. 규약:
+- 파일명: `[a-z0-9-]` 1~64자, 실행 비트 필요 (`chmod +x`)
+- 실행: `STDIN`으로 `params` JSON을 받고, `STDOUT` 마지막 줄에 `{"ok":bool,"message":...}` JSON 한 줄을 출력
+- 예: `handlers/naver-publish`, `handlers/echo-test` 참조
+
+### 4. 터널 + tail 채널 띄우기
+
+```sh
+# 터널: 서버의 127.0.0.1:8930을 PC의 127.0.0.1:8930으로 연결 (기본 서버 호스트는 환경변수로 지정)
+PC_BRIDGE_SSH_HOST=your-server.example.com bash ~/.naver-bridge/bridge/pc-bridge-tunnel.sh &
+# tail 채널: 서버 큐를 따라가 핸들러 실행 (LaunchAgent로 항상 켜두기 권장)
+# ~/Library/LaunchAgents/com.papercompany.pc-bridge.plist 가 tail_channel.py를 KeepAlive로 실행
+launchctl load ~/Library/LaunchAgents/com.papercompany.pc-bridge.plist
+```
+
+다른 서버에 붙이려면 `PC_BRIDGE_SSH_HOST`와 `PC_BRIDGE_QUEUE` 환경변수로 서버 호스트·큐 경로를 지정하면 됩니다. 기본값은 기존 배포 호환용으로 유지됩니다.
+
+### 5. 확인
+
+```sh
+# PC 로컬 직접 호출
+curl -s http://127.0.0.1:8930/dispatch -H 'X-Papercompany-Webhook-Key: <키>' -d '{"handler":"echo-test","params":{"msg":"hi"}}'
+# → {"ok":true,"message":"echo"}
+# 서버 큐로 호출 (서버에서)
+echo '{"handler":"echo-test","params":{"msg":"hi"}}' >> /srv/papercompany/state/naver-publish-queue/pending.jsonl
+# → PC tail 로그에 job received / job done 기록
+```
+
 ## Build
 
 ```bash
