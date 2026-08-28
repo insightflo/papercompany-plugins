@@ -1,28 +1,17 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
-  HEALTH_PATH,
-  HEALTH_TIMEOUT_MS,
-  PUBLISH_PATH,
+  DISPATCH_PATH,
   WEBHOOK_KEY_HEADER,
 } from "./constants.js";
 import type { PcBridgeConfig } from "./config.js";
-import type { ValidatedPublishRequest } from "./validate.js";
+import type { ValidatedDispatchRequest } from "./validate.js";
 import { buildBridgePayload } from "./validate.js";
 
 export type BridgeHttpClient = {
   fetch(url: string, init?: RequestInit): Promise<Response>;
 };
 
-export type BridgeHealth = {
-  checkedAt: string;
-  baseUrl: string;
-  reachable: boolean;
-  healthy: boolean;
-  httpStatus: number | null;
-  detail: string;
-};
-
-export type BridgePublishResult = {
+export type BridgeDispatchResult = {
   /** Mirrors the mac bridge body's own `ok` flag; false for transport errors too. */
   ok: boolean;
   httpStatus: number | null;
@@ -61,62 +50,26 @@ async function parseJsonBody(response: Response): Promise<Record<string, unknown
   }
 }
 
-export async function checkBridgeHealth(
-  http: BridgeHttpClient,
-  baseUrl: string,
-  timeoutMs: number = HEALTH_TIMEOUT_MS,
-): Promise<BridgeHealth> {
-  const checkedAt = new Date().toISOString();
-
-  try {
-    const response = await withTimeout(
-      http.fetch(`${baseUrl}${HEALTH_PATH}`, { method: "GET" }),
-      timeoutMs,
-      "PC 브리지 health 확인",
-    );
-    const body = await parseJsonBody(response);
-    const healthy = response.ok && body !== null && body.ok === true;
-
-    return {
-      checkedAt,
-      baseUrl,
-      reachable: true,
-      healthy,
-      httpStatus: response.status,
-      detail: healthy
-        ? "PC 브리지가 응답 중입니다."
-        : body !== null
-          ? `health 응답이 ok가 아닙니다 (HTTP ${response.status}).`
-          : `health 응답을 파싱할 수 없습니다 (HTTP ${response.status}).`,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      checkedAt,
-      baseUrl,
-      reachable: false,
-      healthy: false,
-      httpStatus: null,
-      detail: `PC 브리지에 연결할 수 없습니다: ${message}`,
-    };
-  }
-}
-
-export async function postPublishToBridge(
+/**
+ * Note: the mac bridge sits behind the SSH reverse tunnel loopback, so the
+ * plugin deliberately does NOT probe /health — reachability is only observable
+ * through an actual dispatch attempt.
+ */
+export async function postDispatchToBridge(
   http: BridgeHttpClient,
   params: {
     baseUrl: string;
     webhookKey: string;
-    request: ValidatedPublishRequest;
+    request: ValidatedDispatchRequest;
     timeoutMs: number;
   },
-): Promise<BridgePublishResult> {
+): Promise<BridgeDispatchResult> {
   const payload = buildBridgePayload(params.request);
 
   let response: Response;
   try {
     response = await withTimeout(
-      http.fetch(`${params.baseUrl}${PUBLISH_PATH}`, {
+      http.fetch(`${params.baseUrl}${DISPATCH_PATH}`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -125,7 +78,7 @@ export async function postPublishToBridge(
         body: JSON.stringify(payload),
       }),
       params.timeoutMs,
-      "PC 브리지 발행 요청",
+      "PC 브리지 디스패치 요청",
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

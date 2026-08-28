@@ -3,19 +3,15 @@ import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import worker from "../src/worker.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import type { PublishHistoryEntry } from "../src/history.js";
+import type { DispatchHistoryEntry } from "../src/history.js";
 
 type HttpCall = { url: string; init?: RequestInit };
 
-const ONBOARDING_URL = "https://manual-onboarding.pages.dev/posts/example";
-const GAZUA_URL = "https://gazua.showk.ing/morning/2026-08-28";
-
 const BRIDGE_SUCCESS_BODY = {
   ok: true,
-  message: "발행 완료",
+  message: "echo",
   url: "https://blog.naver.com/tester/123",
-  category: "AI뉴스",
-  title: "테스트 발행",
+  title: "테스트 디스패치",
   image_count: 3,
 };
 
@@ -38,13 +34,6 @@ function installHttp(
       return handler(call);
     },
   };
-}
-
-function headerOf(call: HttpCall, name: string): string {
-  const headers = call.init?.headers as Record<string, string> | undefined;
-  if (!headers) return "";
-  const found = Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase());
-  return found?.[1] ?? "";
 }
 
 async function setupHarness(options?: {
@@ -75,23 +64,42 @@ async function setupHarness(options?: {
   return harness;
 }
 
-function readHistory(harness: Awaited<ReturnType<typeof setupHarness>>): PublishHistoryEntry[] {
-  return (harness.getState({ scopeKind: "instance", stateKey: "publish-history" }) ?? []) as PublishHistoryEntry[];
+function readHistory(harness: Awaited<ReturnType<typeof setupHarness>>): DispatchHistoryEntry[] {
+  return (harness.getState({ scopeKind: "instance", stateKey: "dispatch-history" }) ?? []) as DispatchHistoryEntry[];
+}
+
+async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) {
+      throw new Error("waitFor 조건이 시간 내 충족되지 않았습니다.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+function headerOf(call: HttpCall, name: string): string {
+  const headers = call.init?.headers as Record<string, string> | undefined;
+  if (!headers) return "";
+  const found = Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase());
+  return found?.[1] ?? "";
 }
 
 describe("pc-bridge worker: agent tool", () => {
-  it("proxies a workflow publish to the mac bridge and returns the result", async () => {
+  it("forwards {handler, params} verbatim to the mac bridge /dispatch and returns the result", async () => {
     const harness = await setupHarness();
     const calls: HttpCall[] = [];
     installHttp(harness.ctx, calls, () => jsonResponse(BRIDGE_SUCCESS_BODY));
 
-    const result = await harness.executeTool("pc-bridge-publish", {
-      url: GAZUA_URL,
-      workflow: "gazua-morning",
+    const params = { url: "https://gazua.showk.ing/morning/2026-08-28", workflow: "gazua-morning" };
+    const result = await harness.executeTool("pc-bridge-dispatch", {
+      handler: "naver-publish",
+      params,
     });
 
     expect(result.error).toBeUndefined();
-    expect(result.content).toContain("PC 브리지 발행 완료");
+    expect(result.content).toContain("PC 브리지 디스패치 완료");
+    expect(result.content).toContain("naver-publish");
     expect(result.content).toContain("https://blog.naver.com/tester/123");
     expect(result.data).toMatchObject({
       ok: true,
@@ -100,48 +108,53 @@ describe("pc-bridge worker: agent tool", () => {
     });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toBe("http://127.0.0.1:8930/naver-publish");
+    expect(calls[0]?.url).toBe("http://127.0.0.1:8930/dispatch");
     expect(calls[0]?.init?.method).toBe("POST");
     expect(headerOf(calls[0]!, "X-Papercompany-Webhook-Key")).toBe("test-webhook-key");
     expect(headerOf(calls[0]!, "content-type")).toBe("application/json");
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
-      url: GAZUA_URL,
-      workflow: "gazua-morning",
+      handler: "naver-publish",
+      params,
     });
 
     const history = readHistory(harness);
     expect(history).toHaveLength(1);
     expect(history[0]).toMatchObject({
       source: "tool",
-      url: GAZUA_URL,
-      workflow: "gazua-morning",
-      category: "AI뉴스",
+      handler: "naver-publish",
       ok: true,
       permalink: "https://blog.naver.com/tester/123",
-      title: "테스트 발행",
+      title: "테스트 디스패치",
       imageCount: 3,
     });
+    expect(history[0]?.paramsSnapshot).toContain("gazua-morning");
   });
 
-  it("proxies a direct category publish and forwards the payload as-is", async () => {
+  it("passes arbitrary handler params through without inspecting them", async () => {
     const harness = await setupHarness();
     const calls: HttpCall[] = [];
-    const body = { ...BRIDGE_SUCCESS_BODY, ok: true, category: "AI개념" };
-    installHttp(harness.ctx, calls, () => jsonResponse(body));
+    installHttp(harness.ctx, calls, () => jsonResponse({ ok: true, message: "echo" }));
 
-    const result = await harness.executeTool("pc-bridge-publish", {
-      url: ONBOARDING_URL,
-      category: "AI개념",
+    const result = await harness.executeTool("pc-bridge-dispatch", {
+      handler: "echo-test",
+      params: { hello: "world", nested: { list: [1, 2] } },
     });
 
     expect(result.error).toBeUndefined();
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
-      url: ONBOARDING_URL,
-      category: "AI개념",
+      handler: "echo-test",
+      params: { hello: "world", nested: { list: [1, 2] } },
     });
+  });
 
-    const history = readHistory(harness);
-    expect(history[0]).toMatchObject({ category: "AI개념", workflow: null });
+  it("forwards an empty params object when omitted", async () => {
+    const harness = await setupHarness();
+    const calls: HttpCall[] = [];
+    installHttp(harness.ctx, calls, () => jsonResponse({ ok: true }));
+
+    await harness.executeTool("pc-bridge-dispatch", { handler: "echo-test" });
+
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ handler: "echo-test", params: {} });
   });
 
   it("resolves the webhook key from a secret reference when configured", async () => {
@@ -155,41 +168,41 @@ describe("pc-bridge worker: agent tool", () => {
     const calls: HttpCall[] = [];
     installHttp(harness.ctx, calls, () => jsonResponse(BRIDGE_SUCCESS_BODY));
 
-    const result = await harness.executeTool("pc-bridge-publish", {
-      url: GAZUA_URL,
-      workflow: "gazua-evening",
+    const result = await harness.executeTool("pc-bridge-dispatch", {
+      handler: "echo-test",
+      params: {},
     });
 
     expect(result.error).toBeUndefined();
     expect(headerOf(calls[0]!, "X-Papercompany-Webhook-Key")).toBe("secret-key-value");
   });
 
-  it("rejects an invalid url without contacting the bridge", async () => {
+  it("rejects a malformed handler name without contacting the bridge", async () => {
     const harness = await setupHarness();
     const calls: HttpCall[] = [];
     installHttp(harness.ctx, calls, () => jsonResponse(BRIDGE_SUCCESS_BODY));
 
-    const result = await harness.executeTool("pc-bridge-publish", {
-      url: "https://evil.com/post",
-      workflow: "tech-ai-news",
+    const result = await harness.executeTool("pc-bridge-dispatch", {
+      handler: "../handlers/evil",
+      params: {},
     });
 
-    expect(result.error).toContain("허용되지 않은 호스트");
+    expect(result.error).toContain("[a-z0-9-]");
     expect(calls).toHaveLength(0);
     expect(readHistory(harness)).toHaveLength(0);
   });
 
-  it("rejects an unknown workflow without contacting the bridge", async () => {
+  it("rejects non-object params without contacting the bridge", async () => {
     const harness = await setupHarness();
     const calls: HttpCall[] = [];
     installHttp(harness.ctx, calls, () => jsonResponse(BRIDGE_SUCCESS_BODY));
 
-    const result = await harness.executeTool("pc-bridge-publish", {
-      url: ONBOARDING_URL,
-      workflow: "does-not-exist",
+    const result = await harness.executeTool("pc-bridge-dispatch", {
+      handler: "echo-test",
+      params: ["not", "an", "object"],
     });
 
-    expect(result.error).toContain("does-not-exist");
+    expect(result.error).toContain("JSON 객체");
     expect(calls).toHaveLength(0);
   });
 
@@ -198,49 +211,65 @@ describe("pc-bridge worker: agent tool", () => {
     const calls: HttpCall[] = [];
     installHttp(harness.ctx, calls, () => jsonResponse(BRIDGE_SUCCESS_BODY));
 
-    const result = await harness.executeTool("pc-bridge-publish", {
-      url: ONBOARDING_URL,
-      workflow: "tech-ai-news",
+    const result = await harness.executeTool("pc-bridge-dispatch", {
+      handler: "echo-test",
+      params: {},
     });
 
     expect(result.error).toContain("웹훅 키가 설정되지 않았습니다");
     expect(calls).toHaveLength(0);
   });
 
-  it("returns the bridge's own failure body when the bridge reports ok:false", async () => {
+  it("returns the bridge's own failure body when the bridge reports ok:false (e.g. handler params error)", async () => {
     const harness = await setupHarness();
     const calls: HttpCall[] = [];
     installHttp(harness.ctx, calls, () => jsonResponse({
       ok: false,
-      error: "login_failed",
-      message: "네이버 로그인에 실패했습니다.",
+      error: "invalid-params",
+      message: "URL 화이트리스트 위반: https://evil.com (핸들러 판정)",
     }));
 
-    const result = await harness.executeTool("pc-bridge-publish", {
-      url: ONBOARDING_URL,
-      workflow: "tech-ai-news",
+    const result = await harness.executeTool("pc-bridge-dispatch", {
+      handler: "naver-publish",
+      params: { url: "https://evil.com", workflow: "gazua-morning" },
     });
 
-    expect(result.error).toContain("네이버 로그인에 실패했습니다.");
+    expect(result.error).toContain("URL 화이트리스트 위반");
     expect(result.data).toMatchObject({ ok: false, httpStatus: 200 });
 
     const history = readHistory(harness);
     expect(history).toHaveLength(1);
     expect(history[0]).toMatchObject({
       ok: false,
-      error: "login_failed",
-      message: "네이버 로그인에 실패했습니다.",
+      error: "invalid-params",
+      message: "URL 화이트리스트 위반: https://evil.com (핸들러 판정)",
     });
+  });
+
+  it("surfaces handler-not-found (404) from the bridge", async () => {
+    const harness = await setupHarness();
+    installHttp(harness.ctx, [], () => jsonResponse(
+      { ok: false, error: "handler-not-found", message: "등록되지 않았거나 실행 불가한 핸들러: nope" },
+      404,
+    ));
+
+    const result = await harness.executeTool("pc-bridge-dispatch", {
+      handler: "nope",
+      params: {},
+    });
+
+    expect(result.error).toContain("등록되지 않았거나");
+    const history = readHistory(harness);
+    expect(history[0]).toMatchObject({ ok: false, httpStatus: 404 });
   });
 
   it("surfaces transport failures and records them in history", async () => {
     const harness = await setupHarness();
-    const calls: HttpCall[] = [];
-    installHttp(harness.ctx, calls, () => new Response("upstream unavailable", { status: 502 }));
+    installHttp(harness.ctx, [], () => new Response("upstream unavailable", { status: 502 }));
 
-    const result = await harness.executeTool("pc-bridge-publish", {
-      url: ONBOARDING_URL,
-      workflow: "tech-ai-news",
+    const result = await harness.executeTool("pc-bridge-dispatch", {
+      handler: "echo-test",
+      params: {},
     });
 
     expect(result.error).toContain("HTTP 502");
@@ -258,80 +287,76 @@ describe("pc-bridge worker: agent tool", () => {
     });
     installHttp(harness.ctx, [], () => jsonResponse(BRIDGE_SUCCESS_BODY));
 
-    for (const workflow of ["tech-ai-news", "tech-ai-scout", "agent-team-concept-radar"]) {
-      await harness.executeTool("pc-bridge-publish", { url: ONBOARDING_URL, workflow });
+    for (const handler of ["a-one", "b-two", "c-three"]) {
+      await harness.executeTool("pc-bridge-dispatch", { handler, params: {} });
     }
 
     const history = readHistory(harness);
     expect(history).toHaveLength(2);
-    expect(history.map((entry) => entry.workflow)).toEqual(["agent-team-concept-radar", "tech-ai-scout"]);
+    expect(history.map((entry) => entry.handler)).toEqual(["c-three", "b-two"]);
+  });
+
+  it("caps oversized params snapshots in history", async () => {
+    const harness = await setupHarness();
+    installHttp(harness.ctx, [], () => jsonResponse(BRIDGE_SUCCESS_BODY));
+
+    await harness.executeTool("pc-bridge-dispatch", {
+      handler: "echo-test",
+      params: { blob: "x".repeat(5000) },
+    });
+
+    const snapshot = readHistory(harness)[0]?.paramsSnapshot ?? "";
+    expect(snapshot.length).toBeLessThanOrEqual(2001);
+    expect(snapshot.endsWith("…")).toBe(true);
   });
 });
 
 describe("pc-bridge worker: UI action and status", () => {
-  it("publishes via the UI action and reports source=ui", async () => {
+  it("dispatches via the UI action and reports source=ui", async () => {
     const harness = await setupHarness();
     const calls: HttpCall[] = [];
     installHttp(harness.ctx, calls, () => jsonResponse(BRIDGE_SUCCESS_BODY));
 
     const outcome = await harness.performAction<{
-      entry?: PublishHistoryEntry;
+      entry?: DispatchHistoryEntry;
       result?: { ok: boolean };
-    }>("publish", { url: GAZUA_URL, workflow: "gazua-morning" });
+    }>("dispatch", { handler: "echo-test", params: { k: 1 } });
 
     expect(outcome.result?.ok).toBe(true);
-    expect(readHistory(harness)[0]).toMatchObject({ source: "ui" });
+    expect(calls[0]?.url).toBe("http://127.0.0.1:8930/dispatch");
+    expect(readHistory(harness)[0]).toMatchObject({ source: "ui", handler: "echo-test" });
   });
 
-  it("reports healthy status from the mac bridge /health endpoint", async () => {
+  it("reports status without probing the bridge (tunnel loopback is not directly checkable)", async () => {
     const harness = await setupHarness();
     const calls: HttpCall[] = [];
-    installHttp(harness.ctx, calls, (call) => {
-      if (call.url.endsWith("/health")) {
-        return jsonResponse({ ok: true });
-      }
-      return jsonResponse(BRIDGE_SUCCESS_BODY);
-    });
+    installHttp(harness.ctx, calls, () => jsonResponse(BRIDGE_SUCCESS_BODY));
 
     const status = await harness.getData<{
-      health: { reachable: boolean; healthy: boolean; httpStatus: number | null; detail: string };
       config: { bridgeBaseUrl: string; webhookKeyConfigured: boolean };
-      workflows: Array<{ workflow: string; category: string }>;
-      history: PublishHistoryEntry[];
+      healthNote: string;
+      chainDoc: string;
+      dispatchPath: string;
+      history: DispatchHistoryEntry[];
     }>("status");
 
-    expect(calls[0]?.url).toBe("http://127.0.0.1:8930/health");
-    expect(status.health).toMatchObject({ reachable: true, healthy: true, httpStatus: 200 });
+    // 어떤 HTTP 호출도 일어나지 않아야 한다 — /health 프로브 없음
+    expect(calls).toHaveLength(0);
     expect(status.config).toMatchObject({
       bridgeBaseUrl: "http://127.0.0.1:8930",
       webhookKeyConfigured: true,
     });
-    expect(status.workflows).toHaveLength(6);
-    expect(status.workflows[0]).toEqual({ workflow: "tech-ai-news", category: "AI뉴스" });
-  });
-
-  it("reports unreachable status when the bridge is down", async () => {
-    const harness = await setupHarness();
-    harness.ctx.http = {
-      async fetch(): Promise<Response> {
-        throw new Error("connection refused (tunnel down)");
-      },
-    };
-
-    const status = await harness.getData<{
-      health: { reachable: boolean; healthy: boolean; detail: string };
-    }>("status");
-
-    expect(status.health.reachable).toBe(false);
-    expect(status.health.healthy).toBe(false);
-    expect(status.health.detail).toContain("connection refused");
+    expect(status.dispatchPath).toBe("/dispatch");
+    expect(status.healthNote).toContain("직접 상태를 확인할 수 없습니다");
+    expect(status.chainDoc).toContain("handlers/");
+    expect(status.history).toEqual([]);
   });
 });
 
-describe("pc-bridge worker: webhook endpoint", () => {
+describe("pc-bridge worker: webhook endpoint (fire-and-forget)", () => {
   function webhookInput(body: unknown, headers: Record<string, string>) {
     return {
-      endpointKey: "publish",
+      endpointKey: "dispatch",
       headers,
       rawBody: JSON.stringify(body),
       parsedBody: body,
@@ -339,23 +364,31 @@ describe("pc-bridge worker: webhook endpoint", () => {
     };
   }
 
-  it("accepts a correctly keyed publish request and records source=webhook", async () => {
+  it("accepts a correctly keyed request, records source=webhook, and resolves before the bridge settles", async () => {
     const harness = await setupHarness();
     const calls: HttpCall[] = [];
-    installHttp(harness.ctx, calls, () => jsonResponse(BRIDGE_SUCCESS_BODY));
+    let releaseBridge: (() => void) | undefined;
+    installHttp(harness.ctx, calls, () => new Promise<Response>((resolve) => {
+      releaseBridge = () => resolve(jsonResponse(BRIDGE_SUCCESS_BODY));
+    }));
 
     await worker.definition.onWebhook?.(webhookInput(
-      { url: GAZUA_URL, workflow: "gazua-morning" },
+      { handler: "echo-test", params: { hello: "world" } },
       { "X-Papercompany-Webhook-Key": "test-webhook-key" },
     ));
 
-    expect(calls).toHaveLength(1);
+    // fire-and-forget: 웹훅 핸들러는 브리지 응답을 기다리지 않고 반환한다
+    await waitFor(() => calls.length > 0);
+    releaseBridge?.();
+
+    await waitFor(() => readHistory(harness).length > 0);
+    expect(calls[0]?.url).toBe("http://127.0.0.1:8930/dispatch");
     expect(headerOf(calls[0]!, "x-papercompany-webhook-key")).toBe("test-webhook-key");
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
-      url: GAZUA_URL,
-      workflow: "gazua-morning",
+      handler: "echo-test",
+      params: { hello: "world" },
     });
-    expect(readHistory(harness)[0]).toMatchObject({ source: "webhook" });
+    expect(readHistory(harness)[0]).toMatchObject({ source: "webhook", handler: "echo-test" });
   });
 
   it("rejects a request with a missing or wrong key", async () => {
@@ -364,51 +397,47 @@ describe("pc-bridge worker: webhook endpoint", () => {
     installHttp(harness.ctx, calls, () => jsonResponse(BRIDGE_SUCCESS_BODY));
 
     await expect(worker.definition.onWebhook?.(webhookInput(
-      { url: GAZUA_URL, workflow: "gazua-morning" },
+      { handler: "echo-test", params: {} },
       {},
     ))).rejects.toThrow(/X-Papercompany-Webhook-Key/);
 
     await expect(worker.definition.onWebhook?.(webhookInput(
-      { url: GAZUA_URL, workflow: "gazua-morning" },
+      { handler: "echo-test", params: {} },
       { "X-Papercompany-Webhook-Key": "wrong-key" },
     ))).rejects.toThrow(/X-Papercompany-Webhook-Key/);
 
     expect(calls).toHaveLength(0);
   });
 
-  it("rejects an invalid payload with the validation error", async () => {
+  it("rejects a malformed handler name synchronously with the validation error", async () => {
     const harness = await setupHarness();
     const calls: HttpCall[] = [];
     installHttp(harness.ctx, calls, () => jsonResponse(BRIDGE_SUCCESS_BODY));
 
     await expect(worker.definition.onWebhook?.(webhookInput(
-      { url: "https://evil.com/x", workflow: "tech-ai-news" },
+      { handler: "BAD_NAME", params: {} },
       { "X-Papercompany-Webhook-Key": "test-webhook-key" },
-    ))).rejects.toThrow(/허용되지 않은 호스트/);
+    ))).rejects.toThrow(/\[a-z0-9-\]/);
 
     expect(calls).toHaveLength(0);
   });
 
   it("rejects an unparseable body", async () => {
     const harness = await setupHarness();
-    const calls: HttpCall[] = [];
-    installHttp(harness.ctx, calls, () => jsonResponse(BRIDGE_SUCCESS_BODY));
 
     await expect(worker.definition.onWebhook?.({
-      endpointKey: "publish",
+      endpointKey: "dispatch",
       headers: { "X-Papercompany-Webhook-Key": "test-webhook-key" },
       rawBody: "not-json{",
       requestId: "req-2",
     })).rejects.toThrow(/파싱/);
-
-    expect(calls).toHaveLength(0);
   });
 
   it("rejects unknown endpoint keys", async () => {
     const harness = await setupHarness();
 
     await expect(worker.definition.onWebhook?.({
-      endpointKey: "other",
+      endpointKey: "publish",
       headers: {},
       rawBody: "{}",
       requestId: "req-3",

@@ -1,7 +1,7 @@
 {
   "name": "@insightflo/paperclip-pc-bridge",
-  "version": "0.1.0",
-  "description": "Paperclip plugin that forwards Naver blog publish requests to the operator PC bridge (mac) over the SSH reverse tunnel",
+  "version": "0.2.0",
+  "description": "Paperclip plugin that dispatches {handler, params} calls to registered handlers on the operator PC bridge (mac) over the SSH reverse tunnel",
   "type": "module",
   "private": true,
   "exports": {

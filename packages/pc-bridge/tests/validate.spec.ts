@@ -1,179 +1,104 @@
 import { describe, expect, it } from "vitest";
 import {
-  allowedCategories,
+  HANDLER_NAME_PATTERN,
   buildBridgePayload,
-  categoryForWorkflow,
-  validatePublishRequest,
-  validatePublishUrl,
-  workflowKeys,
+  isValidHandlerName,
+  validateDispatchRequest,
 } from "../src/validate.js";
 
-const ONBOARDING_URL = "https://manual-onboarding.pages.dev/posts/example";
-const GAZUA_URL = "https://gazua.showk.ing/morning/2026-08-28";
-
-describe("validatePublishUrl", () => {
-  it("accepts allowlisted https hosts", () => {
-    expect(validatePublishUrl(ONBOARDING_URL)).toEqual({ ok: true, url: expect.any(String) });
-    expect(validatePublishUrl(GAZUA_URL)).toEqual({ ok: true, url: expect.any(String) });
-    expect(validatePublishUrl(` ${GAZUA_URL} `).ok).toBe(true);
+describe("isValidHandlerName", () => {
+  it("accepts lowercase alphanumeric and hyphen names", () => {
+    expect(isValidHandlerName("echo-test")).toBe(true);
+    expect(isValidHandlerName("naver-publish")).toBe(true);
+    expect(isValidHandlerName("a")).toBe(true);
+    expect(isValidHandlerName("a1-bridge-2")).toBe(true);
+    expect(isValidHandlerName("b".repeat(64))).toBe(true);
   });
 
-  it("normalizes host casing", () => {
-    const result = validatePublishUrl("https://GAZUA.SHOWK.ING/morning");
-    expect(result.ok).toBe(true);
-  });
-
-  it("rejects non-string, empty, and unparseable urls", () => {
-    expect(validatePublishUrl(undefined).ok).toBe(false);
-    expect(validatePublishUrl(42).ok).toBe(false);
-    expect(validatePublishUrl("   ").ok).toBe(false);
-    expect(validatePublishUrl("not-a-url").ok).toBe(false);
-  });
-
-  it("rejects http and other schemes", () => {
-    expect(validatePublishUrl("http://gazua.showk.ing/morning").ok).toBe(false);
-    expect(validatePublishUrl("file:///etc/passwd").ok).toBe(false);
-  });
-
-  it("rejects hosts outside the allowlist, including lookalike subdomains", () => {
-    expect(validatePublishUrl("https://evil.com/path").ok).toBe(false);
-    expect(validatePublishUrl("https://gazua.showk.ing.evil.com/path").ok).toBe(false);
-    expect(validatePublishUrl("https://preview.manual-onboarding.pages.dev/path").ok).toBe(false);
-    expect(validatePublishUrl("https://showk.ing/morning").ok).toBe(false);
-  });
-
-  it("rejects urls with embedded credentials", () => {
-    expect(validatePublishUrl("https://user:pass@gazua.showk.ing/morning").ok).toBe(false);
-  });
-});
-
-describe("workflow/category mapping", () => {
-  it("maps all six workflows to their categories", () => {
-    expect(workflowKeys()).toEqual([
-      "tech-ai-news",
-      "tech-ai-scout",
-      "agent-team-concept-radar",
-      "youtube-report",
-      "gazua-morning",
-      "gazua-evening",
-    ]);
-
-    expect(categoryForWorkflow("tech-ai-news")).toBe("AI뉴스");
-    expect(categoryForWorkflow("tech-ai-scout")).toBe("AI소프트웨어");
-    expect(categoryForWorkflow("agent-team-concept-radar")).toBe("AI개념");
-    expect(categoryForWorkflow("youtube-report")).toBe("AI유투브요약");
-    expect(categoryForWorkflow("gazua-morning")).toBe("한국증시");
-    expect(categoryForWorkflow("gazua-evening")).toBe("미국증시");
-
-    expect(allowedCategories()).toEqual([
-      "AI뉴스",
-      "AI소프트웨어",
-      "AI개념",
-      "AI유투브요약",
-      "한국증시",
-      "미국증시",
-    ]);
-  });
-
-  it("returns null for unknown workflows", () => {
-    expect(categoryForWorkflow("tech-unknown")).toBeNull();
-    expect(categoryForWorkflow("")).toBeNull();
-  });
-});
-
-describe("validatePublishRequest", () => {
-  it("accepts each workflow and derives its category", () => {
-    for (const workflow of workflowKeys()) {
-      const result = validatePublishRequest({ url: ONBOARDING_URL, workflow });
-      expect(result).toEqual({
-        ok: true,
-        request: {
-          url: expect.any(String),
-          workflow,
-          category: categoryForWorkflow(workflow),
-        },
-      });
+  it("rejects names outside the mac handlers/ whitelist contract", () => {
+    for (const name of [
+      "",                     // 빈 값
+      "Bad_Name",             // 대문자·밑줄
+      "naver_publish.py",     // 확장자·밑줄
+      "../bridge_server",     // 경로 탈출
+      "a/b",                  // 경로 구분자
+      ".hidden",              // 점으로 시작
+      "echo-test ",           // 공백
+      "-leading",             // 하이픈으로 시작
+      "a".repeat(65),         // 길이 초과
+    ]) {
+      expect(isValidHandlerName(name), name).toBe(false);
     }
   });
 
-  it("accepts a direct category and records no workflow", () => {
-    const result = validatePublishRequest({ url: GAZUA_URL, category: "한국증시" });
+  it("rejects non-strings", () => {
+    expect(isValidHandlerName(undefined)).toBe(false);
+    expect(isValidHandlerName(123)).toBe(false);
+    expect(isValidHandlerName(null)).toBe(false);
+    expect(isValidHandlerName({})).toBe(false);
+  });
+
+  it("exposes the pattern used by the tool schema and UI", () => {
+    expect(HANDLER_NAME_PATTERN.test("echo-test")).toBe(true);
+    expect(HANDLER_NAME_PATTERN.test("nope_name")).toBe(false);
+  });
+});
+
+describe("validateDispatchRequest", () => {
+  it("accepts a handler with a params object", () => {
+    expect(validateDispatchRequest({ handler: "naver-publish", params: { url: "https://example.com" } })).toEqual({
+      ok: true,
+      request: { handler: "naver-publish", params: { url: "https://example.com" } },
+    });
+  });
+
+  it("trims the handler name", () => {
+    const result = validateDispatchRequest({ handler: " echo-test ", params: {} });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.request.workflow).toBeNull();
-      expect(result.request.category).toBe("한국증시");
+      expect(result.request.handler).toBe("echo-test");
     }
   });
 
-  it("trims workflow and category inputs", () => {
-    const result = validatePublishRequest({ url: ` ${ONBOARDING_URL} `, workflow: " tech-ai-news " });
+  it("defaults a missing params to an empty object", () => {
+    const result = validateDispatchRequest({ handler: "echo-test" });
+    expect(result).toEqual({ ok: true, request: { handler: "echo-test", params: {} } });
+  });
+
+  it("rejects a missing or malformed handler", () => {
+    expect(validateDispatchRequest({ params: {} }).ok).toBe(false);
+    expect(validateDispatchRequest({ handler: "", params: {} }).ok).toBe(false);
+    expect(validateDispatchRequest({ handler: 42, params: {} }).ok).toBe(false);
+    expect(validateDispatchRequest({ handler: "Not_A_Name", params: {} }).ok).toBe(false);
+    expect(validateDispatchRequest({ handler: "../etc/passwd", params: {} }).ok).toBe(false);
+  });
+
+  it("rejects params that are not JSON objects", () => {
+    expect(validateDispatchRequest({ handler: "echo-test", params: ["array"] }).ok).toBe(false);
+    expect(validateDispatchRequest({ handler: "echo-test", params: "string" }).ok).toBe(false);
+    expect(validateDispatchRequest({ handler: "echo-test", params: 7 }).ok).toBe(false);
+    expect(validateDispatchRequest({ handler: "echo-test", params: null }).ok).toBe(false);
+  });
+
+  it("does not inspect params contents — feature knowledge lives in handlers", () => {
+    // Whatever a handler wants to accept is the handler's business.
+    const weird = { url: "not-a-url", anything: [1, { deep: true }] };
+    const result = validateDispatchRequest({ handler: "echo-test", params: weird });
     expect(result.ok).toBe(true);
-  });
-
-  it("rejects providing both workflow and category", () => {
-    const result = validatePublishRequest({ url: ONBOARDING_URL, workflow: "tech-ai-news", category: "AI뉴스" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toContain("하나만");
-    }
-  });
-
-  it("rejects providing neither workflow nor category", () => {
-    const result = validatePublishRequest({ url: ONBOARDING_URL });
-    expect(result.ok).toBe(false);
-  });
-
-  it("rejects unknown workflow values", () => {
-    const result = validatePublishRequest({ url: ONBOARDING_URL, workflow: "nope" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toContain("nope");
-      expect(result.error).toContain("tech-ai-news");
-    }
-  });
-
-  it("rejects categories outside the six allowed values", () => {
-    const result = validatePublishRequest({ url: ONBOARDING_URL, category: "증시뉴스" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toContain("한국증시");
-    }
-  });
-
-  it("rejects non-string workflow/category values", () => {
-    expect(validatePublishRequest({ url: ONBOARDING_URL, workflow: 123 as unknown as string }).ok).toBe(false);
-    expect(validatePublishRequest({ url: ONBOARDING_URL, category: { k: "한국증시" } as unknown as string }).ok).toBe(false);
-  });
-
-  it("rejects an invalid url even when the workflow is valid", () => {
-    const result = validatePublishRequest({ url: "https://evil.com/x", workflow: "tech-ai-news" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toContain("허용되지 않은 호스트");
+    if (result.ok) {
+      expect(result.request.params).toEqual(weird);
     }
   });
 });
 
 describe("buildBridgePayload", () => {
-  it("passes workflow through without rewriting to category", () => {
-    const validated = validatePublishRequest({ url: GAZUA_URL, workflow: "gazua-morning" });
+  it("produces exactly the generic {handler, params} contract", () => {
+    const validated = validateDispatchRequest({ handler: "naver-publish", params: { url: "https://example.com", workflow: "gazua-morning" } });
     if (!validated.ok) throw new Error("expected valid request");
 
     expect(buildBridgePayload(validated.request)).toEqual({
-      url: expect.stringContaining("https://gazua.showk.ing/"),
-      workflow: "gazua-morning",
+      handler: "naver-publish",
+      params: { url: "https://example.com", workflow: "gazua-morning" },
     });
-  });
-
-  it("passes a direct category through", () => {
-    const validated = validatePublishRequest({ url: ONBOARDING_URL, category: "AI개념" });
-    if (!validated.ok) throw new Error("expected valid request");
-
-    const payload = buildBridgePayload(validated.request);
-    expect(payload).toEqual({
-      url: expect.stringContaining("https://manual-onboarding.pages.dev/"),
-      category: "AI개념",
-    });
-    expect("workflow" in payload).toBe(false);
   });
 });

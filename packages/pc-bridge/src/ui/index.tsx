@@ -12,18 +12,12 @@ import {
 } from "react";
 import { ACTION_KEYS, DATA_KEYS } from "../constants.js";
 
-type WorkflowOption = {
-  workflow: string;
-  category: string;
-};
-
-type PublishHistoryEntry = {
+type DispatchHistoryEntry = {
   id: string;
   requestedAt: string;
   source: string;
-  url: string;
-  workflow: string | null;
-  category: string | null;
+  handler: string;
+  paramsSnapshot: string;
   ok: boolean;
   httpStatus: number | null;
   permalink: string | null;
@@ -43,20 +37,14 @@ type StatusSnapshot = {
     requestTimeoutMs: number;
     historyLimit: number;
   };
-  health: {
-    checkedAt: string;
-    baseUrl: string;
-    reachable: boolean;
-    healthy: boolean;
-    httpStatus: number | null;
-    detail: string;
-  };
-  workflows: WorkflowOption[];
-  history: PublishHistoryEntry[];
+  healthNote: string;
+  chainDoc: string;
+  dispatchPath: string;
+  history: DispatchHistoryEntry[];
 };
 
-type PublishActionOutcome = {
-  entry?: PublishHistoryEntry;
+type DispatchActionOutcome = {
+  entry?: DispatchHistoryEntry;
   result?: {
     ok: boolean;
     httpStatus: number | null;
@@ -89,6 +77,12 @@ const mutedStyle: CSSProperties = {
   color: "#9ca3af",
 };
 
+const monoStyle: CSSProperties = {
+  ...mutedStyle,
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  wordBreak: "break-all",
+};
+
 const tableStyle: CSSProperties = {
   width: "100%",
   borderCollapse: "collapse",
@@ -119,6 +113,13 @@ const inputStyle: CSSProperties = {
   fontSize: "13px",
   background: "rgba(17, 24, 39, 0.9)",
   color: "#f9fafb",
+};
+
+const textareaStyle: CSSProperties = {
+  ...inputStyle,
+  minHeight: "88px",
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  resize: "vertical",
 };
 
 const buttonStyle: CSSProperties = {
@@ -170,57 +171,58 @@ function DataError({ error }: { error: unknown }): JSX.Element | null {
   return <p style={{ ...mutedStyle, color: "#b91c1c" }}>{(error as Error)?.message ?? String(error)}</p>;
 }
 
-function HealthSection({ snapshot }: { snapshot: StatusSnapshot }): JSX.Element {
-  const health = snapshot.health;
-
+function BridgeNoteSection({ snapshot }: { snapshot: StatusSnapshot }): JSX.Element {
   return (
     <section style={cardStyle}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center" }}>
         <strong style={{ fontSize: "14px" }}>맥 브리지 상태</strong>
-        <span style={badgeStyle(health.healthy)}>
-          {health.healthy ? "정상" : health.reachable ? "응답 이상" : "연결 불가"}
-        </span>
+        <span style={{ ...badgeStyle(false), background: "#f3f4f6", color: "#4b5563" }}>직접 확인 불가</span>
       </div>
+      <p style={mutedStyle}>{snapshot.healthNote}</p>
       <p style={mutedStyle}>
-        {snapshot.config.bridgeBaseUrl} · HTTP {health.httpStatus ?? "-"} · {formatDateTime(health.checkedAt)}
-      </p>
-      <p style={mutedStyle}>{health.detail}</p>
-      <p style={mutedStyle}>
-        웹훅 키: {snapshot.config.webhookKeyConfigured
+        대상: <code>{snapshot.config.bridgeBaseUrl}{snapshot.dispatchPath}</code> · 웹훅 키:{" "}
+        {snapshot.config.webhookKeyConfigured
           ? `설정됨${snapshot.config.webhookKeyRef ? ` (시크릿 참조: ${snapshot.config.webhookKeyRef})` : " (인라인)"}`
-          : "미설정 — 발행 불가"}
+          : "미설정 — 디스패치 불가"}
       </p>
     </section>
   );
 }
 
-function PublishForm({
-  workflows,
+function DispatchForm({
   onSubmit,
 }: {
-  workflows: WorkflowOption[];
-  onSubmit: (values: { url: string; workflow: string | null; category: string | null }) => Promise<PublishActionOutcome>;
+  onSubmit: (values: { handler: string; params: Record<string, unknown> }) => Promise<DispatchActionOutcome>;
 }): JSX.Element {
-  const [url, setUrl] = useState("");
-  const [mode, setMode] = useState<"workflow" | "category">("workflow");
-  const [workflow, setWorkflow] = useState(workflows[0]?.workflow ?? "");
-  const [category, setCategory] = useState(workflows[0]?.category ?? "");
+  const [handler, setHandler] = useState("");
+  const [paramsText, setParamsText] = useState("{}");
   const [busy, setBusy] = useState(false);
   const [resultMessage, setResultMessage] = useState("");
   const [isError, setIsError] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+
+    let params: Record<string, unknown>;
+    try {
+      const trimmed = paramsText.trim() || "{}";
+      const parsed: unknown = JSON.parse(trimmed);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("params는 JSON 객체여야 합니다.");
+      }
+      params = parsed as Record<string, unknown>;
+    } catch (error) {
+      setIsError(true);
+      setResultMessage(error instanceof Error ? error.message : String(error));
+      return;
+    }
+
     setBusy(true);
     setResultMessage("");
     setIsError(false);
 
     try {
-      const outcome = await onSubmit({
-        url,
-        workflow: mode === "workflow" ? workflow : null,
-        category: mode === "category" ? category : null,
-      });
+      const outcome = await onSubmit({ handler, params });
 
       if ("error" in outcome && outcome.error) {
         setIsError(true);
@@ -231,18 +233,19 @@ function PublishForm({
       if (outcome.result && outcome.result.ok) {
         const entry = outcome.entry;
         const lines = [
-          `발행 완료: ${entry?.title ?? "(제목 없음)"}`,
-          `카테고리: ${entry?.category ?? "-"}`,
+          `디스패치 완료: ${entry?.handler ?? handler}`,
+          entry?.title ? `제목: ${entry.title}` : "",
           entry?.permalink ? `퍼머링크: ${entry.permalink}` : "",
-          typeof entry?.imageCount === "number" ? `이미지 수: ${entry.imageCount}` : "",
+          entry?.message ? `메시지: ${entry.message}` : "",
         ].filter(Boolean);
         setResultMessage(lines.join(" · "));
-        setUrl("");
         return;
       }
 
       setIsError(true);
-      setResultMessage(outcome.error ?? "발행이 실패했습니다.");
+      const body = outcome.result?.body;
+      const bodyMessage = body && typeof body.message === "string" ? body.message : "";
+      setResultMessage(outcome.error ?? bodyMessage ?? "디스패치가 실패했습니다.");
     } catch (error) {
       setIsError(true);
       setResultMessage(error instanceof Error ? error.message : String(error));
@@ -253,72 +256,32 @@ function PublishForm({
 
   return (
     <section style={cardStyle}>
-      <strong style={{ fontSize: "14px" }}>수동 발행</strong>
+      <strong style={{ fontSize: "14px" }}>수동 디스패치</strong>
       <p style={mutedStyle}>
-        허용 호스트(https)의 URL과 워크플로우/카테고리를 선택해 맥 브리지로 발행을 지시합니다.
+        맥 브리지에 등록된 핸들러 이름과 params JSON으로 기능을 호출합니다.
+        params 검증은 핸들러가 담당합니다 (예: naver-publish는 url/workflow 규칙 검사).
       </p>
       <form onSubmit={(event) => void handleSubmit(event)} style={{ display: "grid", gap: "10px" }}>
         <label style={{ display: "grid", gap: "6px" }}>
-          <span style={mutedStyle}>콘텐츠 URL (https)</span>
+          <span style={mutedStyle}>핸들러 이름 ([a-z0-9-])</span>
           <input
             required
             style={inputStyle}
-            value={url}
-            onChange={(event) => setUrl(event.target.value)}
-            placeholder="https://manual-onboarding.pages.dev/..."
+            value={handler}
+            onChange={(event) => setHandler(event.target.value)}
+            placeholder="echo-test"
           />
         </label>
 
-        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-          <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <input
-              type="radio"
-              name="pc-bridge-mode"
-              checked={mode === "workflow"}
-              onChange={() => setMode("workflow")}
-            />
-            <span style={mutedStyle}>워크플로우</span>
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <input
-              type="radio"
-              name="pc-bridge-mode"
-              checked={mode === "category"}
-              onChange={() => setMode("category")}
-            />
-            <span style={mutedStyle}>카테고리 직접 지정</span>
-          </label>
-        </div>
-
-        {mode === "workflow" ? (
-          <label style={{ display: "grid", gap: "6px" }}>
-            <span style={mutedStyle}>워크플로우</span>
-            <select
-              style={inputStyle}
-              value={workflow}
-              onChange={(event) => setWorkflow(event.target.value)}
-            >
-              {workflows.map((option) => (
-                <option key={option.workflow} value={option.workflow}>
-                  {option.workflow} ({option.category})
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : (
-          <label style={{ display: "grid", gap: "6px" }}>
-            <span style={mutedStyle}>카테고리</span>
-            <select
-              style={inputStyle}
-              value={category}
-              onChange={(event) => setCategory(event.target.value)}
-            >
-              {[...new Set(workflows.map((option) => option.category))].map((item) => (
-                <option key={item} value={item}>{item}</option>
-              ))}
-            </select>
-          </label>
-        )}
+        <label style={{ display: "grid", gap: "6px" }}>
+          <span style={mutedStyle}>params (JSON 객체)</span>
+          <textarea
+            style={textareaStyle}
+            value={paramsText}
+            onChange={(event) => setParamsText(event.target.value)}
+            placeholder={'{"hello": "world"}'}
+          />
+        </label>
 
         {resultMessage ? (
           <p style={{ ...mutedStyle, color: isError ? "#b91c1c" : "#166534" }}>{resultMessage}</p>
@@ -326,7 +289,7 @@ function PublishForm({
 
         <div>
           <button type="submit" style={buttonStyle} disabled={busy}>
-            {busy ? "발행 지시 중..." : "발행 지시"}
+            {busy ? "디스패치 중..." : "디스패치"}
           </button>
         </div>
       </form>
@@ -334,19 +297,19 @@ function PublishForm({
   );
 }
 
-function HistorySection({ history }: { history: PublishHistoryEntry[] }): JSX.Element {
+function HistorySection({ history }: { history: DispatchHistoryEntry[] }): JSX.Element {
   return (
     <section style={cardStyle}>
-      <strong style={{ fontSize: "14px" }}>최근 발행 이력</strong>
+      <strong style={{ fontSize: "14px" }}>최근 디스패치 이력</strong>
       {history.length === 0 ? (
-        <p style={mutedStyle}>아직 발행 이력이 없습니다.</p>
+        <p style={mutedStyle}>아직 디스패치 이력이 없습니다.</p>
       ) : (
         <table style={tableStyle}>
           <thead>
             <tr>
               <th style={thStyle}>시각</th>
               <th style={thStyle}>출처</th>
-              <th style={thStyle}>대상</th>
+              <th style={thStyle}>핸들러 / params</th>
               <th style={thStyle}>결과</th>
             </tr>
           </thead>
@@ -357,10 +320,8 @@ function HistorySection({ history }: { history: PublishHistoryEntry[] }): JSX.El
                 <td style={tdStyle}>{entry.source}</td>
                 <td style={tdStyle}>
                   <div style={{ display: "grid", gap: "3px" }}>
-                    <span style={{ wordBreak: "break-all" }}>{entry.url}</span>
-                    <span style={mutedStyle}>
-                      {entry.workflow ? `${entry.workflow} → ` : ""}{entry.category ?? "-"}
-                    </span>
+                    <span style={{ wordBreak: "break-all" }}>{entry.handler}</span>
+                    {entry.paramsSnapshot ? <span style={monoStyle}>{entry.paramsSnapshot}</span> : null}
                   </div>
                 </td>
                 <td style={tdStyle}>
@@ -389,25 +350,34 @@ function HistorySection({ history }: { history: PublishHistoryEntry[] }): JSX.El
   );
 }
 
+function ChainDocSection({ snapshot }: { snapshot: StatusSnapshot }): JSX.Element {
+  return (
+    <section style={cardStyle}>
+      <strong style={{ fontSize: "14px" }}>체인 구조 (호출 → 실행)</strong>
+      <p style={mutedStyle}>{snapshot.chainDoc}</p>
+      <p style={mutedStyle}>
+        핸들러는 맥의 <code>handlers/</code> 디렉터리에 실행 파일을 추가하는 것만으로 늘어나며,
+        호출은 언제나 <code>{"{handler, params}"}</code> 하나다. 네이버 블로그 발행은 그 핸들러 1종의 예시다.
+      </p>
+    </section>
+  );
+}
+
 export function PcBridgePage(_props: PluginPageProps): JSX.Element {
   const snapshot = usePluginData<StatusSnapshot>(DATA_KEYS.status, {});
-  const publish = usePluginAction(ACTION_KEYS.publish);
+  const dispatch = usePluginAction(ACTION_KEYS.dispatch);
 
-  async function handlePublish(values: { url: string; workflow: string | null; category: string | null }): Promise<PublishActionOutcome> {
-    const outcome = await publish({
-      url: values.url,
-      workflow: values.workflow ?? undefined,
-      category: values.category ?? undefined,
-    });
+  async function handleDispatch(values: { handler: string; params: Record<string, unknown> }): Promise<DispatchActionOutcome> {
+    const outcome = await dispatch({ handler: values.handler, params: values.params });
     await snapshot.refresh();
-    return outcome as PublishActionOutcome;
+    return outcome as DispatchActionOutcome;
   }
 
   return (
     <div style={pageStyle}>
       <section style={cardStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center" }}>
-          <strong style={{ fontSize: "14px" }}>PC Bridge (네이버 발행 지시)</strong>
+          <strong style={{ fontSize: "14px" }}>PC Bridge (범용 PC 기능 호출)</strong>
           <button type="button" style={buttonStyle} onClick={snapshot.refresh}>
             새로고침
           </button>
@@ -416,18 +386,21 @@ export function PcBridgePage(_props: PluginPageProps): JSX.Element {
         {snapshot.loading ? <p style={mutedStyle}>상태를 불러오는 중...</p> : null}
       </section>
 
-      {snapshot.data ? <HealthSection snapshot={snapshot.data} /> : null}
+      {snapshot.data ? <BridgeNoteSection snapshot={snapshot.data} /> : null}
 
-      <PublishForm workflows={snapshot.data?.workflows ?? []} onSubmit={handlePublish} />
+      <DispatchForm onSubmit={handleDispatch} />
 
       <HistorySection history={snapshot.data?.history ?? []} />
+
+      {snapshot.data ? <ChainDocSection snapshot={snapshot.data} /> : null}
 
       <section style={cardStyle}>
         <strong style={{ fontSize: "14px" }}>A1에서 호출하기</strong>
         <p style={mutedStyle}>
-          에이전트 툴 <code>pc-bridge-publish</code> (파라미터 url + workflow 또는 category) 또는 웹훅{" "}
-          <code>POST /api/plugins/pc-bridge/webhooks/publish</code>{" "}
-          (헤더 <code>X-Papercompany-Webhook-Key</code>, JSON 본문)로 발행을 지시할 수 있습니다.
+          에이전트 툴 <code>pc-bridge-dispatch</code> (파라미터 <code>handler</code> + <code>params</code> 객체) 또는 웹훅{" "}
+          <code>POST /api/plugins/pc-bridge/webhooks/dispatch</code>{" "}
+          (헤더 <code>X-Papercompany-Webhook-Key</code>, JSON 본문 <code>{"{handler, params}"}</code>)로 호출할 수 있습니다.
+          웹훅은 fire-and-forget — 접수만 확인하고 결과는 이력에 기록됩니다.
         </p>
       </section>
     </div>
