@@ -77,8 +77,8 @@ UI는 이 사실을 그대로 표기하며, 각 디스패치의 성공/실패는
 이 저장소의 `pc-bridge-mac/`이 배포 원본입니다. PC의 `$HOME/.naver-bridge/bridge/`로 복사합니다 (전체 경로 예시):
 
 ```sh
-# 저장소 위치 (예: /Users/kwak/orca/workspaces/papercompany-plugins/pc-bridge)
-REPO=/Users/kwak/orca/workspaces/papercompany-plugins/pc-bridge
+# 저장소 위치 (이 저장소 클론 경로)
+REPO=$(pwd)  # 예: ~/Projects/papercompany-plugins
 mkdir -p $HOME/.naver-bridge/bridge/state
 cp -r $REPO/pc-bridge-mac/bridge_server.py $REPO/pc-bridge-mac/handlers $REPO/pc-bridge-mac/pc-bridge-tunnel.sh $HOME/.naver-bridge/bridge/
 cp $REPO/pc-bridge-mac/tail_channel.py $HOME/.naver-bridge/
@@ -100,7 +100,7 @@ chmod 600 $HOME/.naver-bridge/bridge/state/bridge.env
 
 ### 3. 핸들러 추가
 
-`$HOME/.naver-bridge/bridge/handlers/<이름>` (전체 경로 예: `/Users/kwak/.naver-bridge/bridge/handlers/my-handler`)에 실행 파일을 만들면 됩니다. 규약:
+`$HOME/.naver-bridge/bridge/handlers/<이름>` (예: `$HOME/.naver-bridge/bridge/handlers/my-handler`)에 실행 파일을 만들면 됩니다. 규약:
 - 파일명: `[a-z0-9-]` 1~64자, 실행 비트 필요 (`chmod +x`)
 - 실행: `STDIN`으로 `params` JSON을 받고, `STDOUT` 마지막 줄에 `{"ok":bool,"message":...}` JSON 한 줄을 출력
 - 예: `handlers/naver-publish`, `handlers/echo-test` 참조
