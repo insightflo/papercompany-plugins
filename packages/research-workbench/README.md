@@ -134,6 +134,6 @@ pnpm --filter @insightflo/paperclip-research-workbench build
 When testing against a real Vane service, use the operations scaffold:
 
 ```bash
-cd /Users/kwak/Projects/ai/papercompany/papercompany-operations/services/vane
+cd /path/to/papercompany-operations/services/vane  # 예: $HOME/Projects/papercompany-operations/services/vane
 ./smoke-test.sh
 ```
