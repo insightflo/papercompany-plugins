@@ -395,7 +395,7 @@ export function PcBridgePage(_props: PluginPageProps): JSX.Element {
       {snapshot.data ? <ChainDocSection snapshot={snapshot.data} /> : null}
 
       <section style={cardStyle}>
-        <strong style={{ fontSize: "14px" }}>A1에서 호출하기</strong>
+        <strong style={{ fontSize: "14px" }}>서버에서 호출하기</strong>
         <p style={mutedStyle}>
           에이전트 툴 <code>pc-bridge-dispatch</code> (파라미터 <code>handler</code> + <code>params</code> 객체) 또는 웹훅{" "}
           <code>POST /api/plugins/pc-bridge/webhooks/dispatch</code>{" "}

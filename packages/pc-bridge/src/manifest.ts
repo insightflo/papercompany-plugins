@@ -33,7 +33,7 @@ const manifest: PaperclipPluginManifestV1 = {
   version: PLUGIN_VERSION,
   displayName: "PC Bridge (범용 PC 기능 호출)",
   description:
-    "A1에서 실행할 수 없는 기능을 운영자 PC(맥) 브리지의 등록된 핸들러로 전달하는 범용 디스패치 플러그인. {handler, params} 하나로 호출하고, params 검증은 PC 측 핸들러가 담당합니다. 네이버 블로그 발행은 핸들러 1종(naver-publish)의 예시입니다.",
+    "서버에서 실행할 수 없는 기능을 운영자 PC(맥) 브리지의 등록된 핸들러로 전달하는 범용 디스패치 플러그인. {handler, params} 하나로 호출하고, params 검증은 PC 측 핸들러가 담당합니다. 네이버 블로그 발행은 핸들러 1종(naver-publish)의 예시입니다.",
   author: "InsightFlo",
   categories: ["automation", "connector"],
   capabilities,
@@ -73,7 +73,7 @@ const manifest: PaperclipPluginManifestV1 = {
       endpointKey: WEBHOOK_ENDPOINT_KEYS.dispatch,
       displayName: "PC Bridge Dispatch",
       description:
-        "A1 스크립트가 {handler, params} 디스패치를 직접 POST하기 위한 fire-and-forget 엔드포인트. " +
+        "서버 스크립트가 {handler, params} 디스패치를 직접 POST하기 위한 fire-and-forget 엔드포인트. " +
         "헤더 X-Papercompany-Webhook-Key 필수. 접수만 확인하며 실행 결과는 플러그인 이력에 기록된다.",
     },
   ],
@@ -83,7 +83,7 @@ const manifest: PaperclipPluginManifestV1 = {
       bridgeBaseUrl: {
         type: "string",
         title: "PC 브리지 주소",
-        description: "SSH -R 터널로 A1 루프백에 노출된 맥 브리지 주소",
+        description: "SSH -R 터널로 서버 루프백에 노출된 맥 브리지 주소",
         default: DEFAULT_BRIDGE_BASE_URL,
       },
       webhookKeyRef: {

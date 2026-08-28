@@ -36,8 +36,8 @@ export const WEBHOOK_ENDPOINT_KEYS = {
 export const HANDLER_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /**
- * Operator PC (mac) bridge base URL. The A1 SSH reverse tunnel (-R) exposes the
- * mac bridge listener on the A1 loopback, so the default is a loopback address.
+ * Operator PC (mac) bridge base URL. The SSH reverse tunnel (-R) exposes the
+ * mac bridge listener on the server loopback, so the default is a loopback address.
  */
 export const DEFAULT_BRIDGE_BASE_URL = "http://127.0.0.1:8930";
 

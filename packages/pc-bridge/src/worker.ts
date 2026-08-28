@@ -46,14 +46,14 @@ type JsonRecord = Record<string, unknown>;
 
 /**
  * Honest health statement: the mac bridge listens on the operator PC loopback
- * and is only reachable through the A1 SSH reverse tunnel, so the plugin has no
+ * and is only reachable through the SSH reverse tunnel, so the plugin has no
  * reliable direct probe. Outcome is observable per-dispatch via history.
  */
 const HEALTH_NOTE =
   "브리지는 운영자 PC(맥)의 루프백에서 동작하고 SSH 역방향 터널 뒤에 있어 플러그인에서 직접 상태를 확인할 수 없습니다. 각 디스패치의 성공/실패는 아래 이력으로 확인하세요.";
 
 const CHAIN_DOC = [
-  "호출자(A1 툴/웹훅) → 이 플러그인(형식 검증만) → SSH -R 터널(A1 루프백 127.0.0.1:8930)",
+  "호출자(서버 툴/웹훅) → 이 플러그인(형식 검증만) → SSH -R 터널(서버 루프백 127.0.0.1:8930)",
   `→ 맥 bridge_server POST ${DISPATCH_PATH} (키 인증·중복차단·레이트리밋·감사로그)`,
   "→ handlers/<이름> 실행 파일(서브프로세스, params는 stdin JSON, 결과는 stdout 마지막 줄 JSON).",
   "웹훅은 fire-and-forget으로 접수만 확인하고, 실행 결과는 이력에 기록된다.",
