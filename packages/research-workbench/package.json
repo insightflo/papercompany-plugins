@@ -12,7 +12,7 @@
     "worker": "./dist/worker.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node esbuild.worker.config.mjs",
     "clean": "rm -rf dist",
     "test": "pnpm build && tsx --test ./tests/*.test.mjs",
     "typecheck": "tsc --noEmit"
@@ -24,6 +24,7 @@
   "devDependencies": {
     "@types/node": "^24.6.0",
     "tsx": "^4.21.0",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "esbuild": "0.25.10"
   }
 }
